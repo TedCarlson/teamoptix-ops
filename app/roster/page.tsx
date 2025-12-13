@@ -22,18 +22,36 @@ function uniqSorted(values: Array<string | null | undefined>) {
   );
 }
 
+type SearchParams = Record<string, string | string[] | undefined>;
+
 export default async function RosterPage({
   searchParams,
 }: {
-  searchParams: Promise<{
-    division?: string;
-    region?: string;
-    company?: string;
-    itg_supervisor?: string;
-    status?: string;
-  }>;
+  searchParams: SearchParams | Promise<SearchParams>;
 }) {
-  const { division, region, company, itg_supervisor, status } = await searchParams;
+  const sp = await Promise.resolve(searchParams);
+
+  const get = (k: string) => {
+    const v = sp[k];
+    return Array.isArray(v) ? v[0] : v;
+  };
+
+  const division = get("division");
+  const region = get("region");
+  const company = get("company");
+  const itg_supervisor = get("itg_supervisor");
+  const status = get("status");
+
+  // Build current query string to preserve filters
+  const qs = new URLSearchParams();
+  if (division) qs.set("division", division);
+  if (region) qs.set("region", region);
+  if (company) qs.set("company", company);
+  if (itg_supervisor) qs.set("itg_supervisor", itg_supervisor);
+  if (status) qs.set("status", status);
+
+  const returnTo = `/roster${qs.toString() ? `?${qs.toString()}` : ""}`;
+
 
 
 // Load only the columns needed to build filter options
@@ -125,7 +143,7 @@ const itgSupervisors = uniqSorted(itgSupPool.map((r: any) => r.itg_supervisor));
         </a>
 
         <a
-          href="/roster/edit"
+          href={`/roster/edit?returnTo=${encodeURIComponent(returnTo)}`}
           style={{
             display: "inline-block",
             padding: "10px 14px",
@@ -183,7 +201,7 @@ const itgSupervisors = uniqSorted(itgSupPool.map((r: any) => r.itg_supervisor));
                   </div>
                   <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
   <a
-    href={`/roster/edit?roster_id=${encodeURIComponent(r.roster_id)}`}
+    href={`/roster/edit?roster_id=${encodeURIComponent(r.roster_id)}&returnTo=${encodeURIComponent(returnTo)}`}
     style={{
       display: "inline-block",
       padding: "8px 12px",

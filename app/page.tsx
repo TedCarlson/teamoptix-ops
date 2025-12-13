@@ -39,6 +39,20 @@ export default function HomePage() {
         >
           KPI Reports →
         </Link>
+
+        <Link
+          href="/route-lock"
+          style={{
+            padding: "14px 18px",
+            borderRadius: 12,
+            border: "1px solid #ddd",
+            textDecoration: "none",
+            fontWeight: 700,
+            display: "inline-block",
+          }}
+        >
+          Route Lock →
+        </Link>
       </div>
     </main>
   );
