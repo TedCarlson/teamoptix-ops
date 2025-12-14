@@ -1,13 +1,8 @@
+import React from "react";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-type SearchParams = {
-  region?: string;
-  fiscal_month_anchor?: string; // YYYY-MM-DD
-  show_components?: string; // "1" to show component columns in Regions table
-};
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -22,624 +17,352 @@ function n(v: any): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
-function fmtPct(v: number | null, digits = 1) {
+function fmtPctRatio(v: number | null, digits = 1) {
   if (v === null) return "—";
-  return `${v.toFixed(digits)}%`;
+  return `${(v * 100).toFixed(digits)}%`;
 }
-
 function fmtNum(v: number | null, digits = 2) {
   if (v === null) return "—";
   return v.toFixed(digits);
 }
 
-function uniqNonEmpty(vals: Array<string | null | undefined>) {
-  const set = new Set<string>();
-  for (const v of vals) {
-    const s = String(v ?? "").trim();
-    if (!s) continue;
-    set.add(s);
-  }
-  return Array.from(set);
+function uniq(vals: string[]) {
+  return Array.from(new Set(vals));
+}
+function latestMonth(rows: any[]) {
+  const months = uniq(rows.map((r) => String(r.fiscal_month_anchor ?? "")).filter(Boolean));
+  months.sort(); // YYYY-MM-DD sorts naturally
+  return months[months.length - 1] ?? "";
 }
 
-function summarizeOneOrMany(vals: Array<string | null | undefined>) {
-  const u = uniqNonEmpty(vals);
-  if (u.length === 0) return "—";
-  if (u.length === 1) return u[0];
-  return `Multiple (${u.length})`;
+const NF = new Intl.NumberFormat("en-US");
+function fmtInt(v: number | null) {
+  if (v === null) return "—";
+  return NF.format(v);
 }
 
-/** ----- Metric mapping + normalization ----- */
-type MetricCode =
-  | "tnps"
-  | "ftr"
-  | "tool_usage"
-  | "total_jobs"
-  | "tnps_promoters"
-  | "tnps_detractors"
-  | "tnps_surveys"
-  | "ftr_fail_jobs"
-  | "ftr_total_jobs"
-  | "tu_result"
-  | "tu_eligible";
+type RankRow = {
+  level: string;
+  rank_scope: string;
+  fiscal_month_anchor: string;
 
-const METRIC_MAP: Record<MetricCode, string[]> = {
-  tnps: ["tNPS Rate", "tNPS", "TNPS", "tnps", "tnps rate", "tnpsrate"],
-  ftr: ["FTR%", "FTR", "ftr%", "ftr", "ftrpercent"],
-  tool_usage: ["ToolUsage", "Tool Usage", "ToolUsage%", "toolusagepercent"],
-  total_jobs: ["Total Jobs", "TotalJobs", "totaljobs"],
+  level_key: string;
+  display_name: string | null;
 
-  tnps_promoters: ["Promoters"],
-  tnps_detractors: ["Detractors"],
-  tnps_surveys: ["tNPS Surveys", "TNPS Surveys", "tnpssurveys"],
-
-  ftr_fail_jobs: ["FTRFailJobs", "FTR Fail Jobs"],
-  ftr_total_jobs: ["Total FTR/Contact Jobs", "FTR Total Jobs"],
-
-  tu_result: ["TUResult", "TU Result"],
-  tu_eligible: ["TUEligibleJobs", "TU Eligible Jobs"],
-};
-
-function normalizeMetricName(s: string) {
-  return String(s ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[%\s_-]+/g, "");
-}
-
-function pickMetricCode(metricName: string): MetricCode | null {
-  const norm = normalizeMetricName(metricName);
-  for (const [code, names] of Object.entries(METRIC_MAP) as any) {
-    for (const candidate of names as string[]) {
-      if (normalizeMetricName(candidate) === norm) return code as MetricCode;
-    }
-  }
-  return null;
-}
-
-/** ----- Region formulas ----- */
-function computeTNPS_Sheets(promoters: number, detractors: number, surveys: number): number | null {
-  if (!surveys || surveys <= 0) return null;
-  return (promoters * 100 + detractors * -100) / surveys;
-}
-function computeFTRPct(fail: number, total: number): number | null {
-  if (!total || total <= 0) return null;
-  return ((total - fail) / total) * 100;
-}
-function computeToolUsagePct(result: number, eligible: number): number | null {
-  if (!eligible || eligible <= 0) return null;
-  return (result / eligible) * 100;
-}
-
-/** ----- Types ----- */
-type PivotRow = {
-  tech_id: string;
-  tech_name: string | null;
-  supervisor: string | null;
-  c_code: string | null;
+  division: string | null;
   region: string | null;
-  fiscal_month_anchor: string | null;
+  company: string | null;
 
+  itg_supervisor: string | null;
+  supervisor: string | null;
+
+  tech_id: string | null;
+  tech_key: string | null;
+
+  headcount: number | null;
   total_jobs: number | null;
+
   tnps: number | null;
-  ftr: number | null;
-  tool_usage: number | null;
+  ftr: number | null;        // ratio 0..1
+  tool_usage: number | null; // ratio 0..1
+
+  rank_overall: number | null;
+  weighted_score: number | null;
 };
 
-type RegionAgg = {
-  region: string;
-  fiscal_month_anchor: string | null;
-
-  headcount: number;
-  total_jobs: number;
-
-  promoters: number;
-  detractors: number;
-  surveys: number;
-
-  ftr_fail_jobs: number;
-  ftr_total_jobs: number;
-
-  tu_result: number;
-  tu_eligible: number;
-
-  tnps_region: number | null;
-  ftr_region: number | null;
-  tool_usage_region: number | null;
-};
-
-type SettingRow = {
-  metric_name: string;
-  enabled: boolean;
-  hidden: boolean;
-};
-
-/** ----- Settings loader (fails open if RLS blocks) ----- */
-async function loadMetricSettings(sb: ReturnType<typeof getSupabase>, scope: string): Promise<SettingRow[]> {
-  const { data, error } = await sb
-    .from("kpi_metric_settings_v1")
-    .select("metric_name,enabled,hidden")
-    .eq("scope", scope);
-
-  if (error) return [];
-  return (data ?? []).map((r: any) => ({
-    metric_name: String(r.metric_name ?? ""),
-    enabled: !!r.enabled,
-    hidden: !!r.hidden,
-  }));
-}
-
-function buildNeededMetricNamesFromSettings(settings: SettingRow[]) {
-  // Always include these for region rollups + primary KPIs
-  const required = new Set<string>([
-    ...METRIC_MAP.tnps,
-    ...METRIC_MAP.ftr,
-    ...METRIC_MAP.tool_usage,
-    ...METRIC_MAP.total_jobs,
-
-    ...METRIC_MAP.tnps_promoters,
-    ...METRIC_MAP.tnps_detractors,
-    ...METRIC_MAP.tnps_surveys,
-
-    ...METRIC_MAP.ftr_fail_jobs,
-    ...METRIC_MAP.ftr_total_jobs,
-
-    ...METRIC_MAP.tu_result,
-    ...METRIC_MAP.tu_eligible,
-  ]);
-
-  // Add any enabled extra raw metrics
-  for (const r of settings ?? []) {
-    if (!r) continue;
-    if (r.hidden) continue;
-    if (!r.enabled) continue;
-    const name = String(r.metric_name ?? "").trim();
-    if (name) required.add(name);
-  }
-
-  return Array.from(required);
-}
-
-/** ----- Latest batch filter: drives “most recent wins” ----- */
-async function getLatestBatchIds(
-  sb: ReturnType<typeof getSupabase>,
-  region?: string,
-  fiscal_month_anchor?: string
-): Promise<string[]> {
-  let q = sb
-    .from("kpi_batches_v1_latest_by_region")
-    .select("batch_id,region,fiscal_month_anchor");
-
-  if (region) q = q.eq("region", region);
-  if (fiscal_month_anchor) q = q.eq("fiscal_month_anchor", fiscal_month_anchor);
-
-  const { data, error } = await q;
-  if (error) return [];
-
-  const ids = (data ?? [])
-    .map((r: any) => String(r.batch_id ?? "").trim())
-    .filter(Boolean);
-
-  return Array.from(new Set(ids));
-}
-
-export default async function MetricsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
-  const sp = await searchParams;
+export default async function MetricsPage() {
   const sb = getSupabase();
 
-  const showComponents = sp.show_components === "1";
+  const [
+    { data: rowsData, error: rankingsError },
+    { data: regionPeople, error: regionPeopleError },
+    { data: divisionPeople, error: divisionPeopleError },
+  ] = await Promise.all([
+    sb.from("kpi_meta_rankings_v2").select("*"),
+    sb.from("kpi_region_people_v1").select("region,director_label,rm_label"),
+    sb.from("kpi_division_people_v1").select("division_name,vp_of_operations,director_label"),
+  ]);
 
-  // 1) Determine “active dataset” = latest batches (optionally by region/month)
-  const latestBatchIds = await getLatestBatchIds(sb, sp.region, sp.fiscal_month_anchor);
-
-  // If the view returns nothing (misconfigured / empty), fail open to avoid a blank page.
-  const mustFilterByBatch = latestBatchIds.length > 0;
-
-  // 2) Load settings (optional)
-  const settings = await loadMetricSettings(sb, "global");
-  const neededMetricNames = buildNeededMetricNamesFromSettings(settings);
-
-  // 3) Fetch KPI master rows
-  let q = sb
-    .from("kpi_master_v1")
-    .select("batch_id,tech_id,tech_name,supervisor,c_code,region,fiscal_month_anchor,metric_name,metric_value_num")
-    .in("metric_name", neededMetricNames);
-
-  if (sp.region) q = q.eq("region", sp.region);
-  if (sp.fiscal_month_anchor) q = q.eq("fiscal_month_anchor", sp.fiscal_month_anchor);
-  if (mustFilterByBatch) q = q.in("batch_id", latestBatchIds);
-
-  const { data, error } = await q;
-
-  if (error) {
+  const fatalError = rankingsError ?? regionPeopleError ?? divisionPeopleError;
+  if (fatalError) {
     return (
-      <main style={{ padding: 40, maxWidth: 1200, margin: "0 auto" }}>
+      <main style={{ padding: 24 }}>
         <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>Metrics</h1>
-        <p style={{ marginTop: 6, opacity: 0.85 }}>KPI report view (tNPS / FTR / ToolUsage)</p>
-
-        <div style={{ marginTop: 18, padding: 16, border: "1px solid #f2c2c2", borderRadius: 14 }}>
-          <div style={{ fontWeight: 950, marginBottom: 6 }}>Could not load KPI report</div>
-          <div style={{ opacity: 0.9 }}>{error.message}</div>
-          <div style={{ marginTop: 10, opacity: 0.85, fontSize: 12 }}>
-            If this is an RLS error, ensure your UI role can read <code>kpi_master_v1</code>.
-          </div>
+        <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c2c2", borderRadius: 14 }}>
+          <div style={{ fontWeight: 950 }}>Could not load metrics data</div>
+          <div style={{ opacity: 0.85, marginTop: 6 }}>{fatalError.message}</div>
         </div>
       </main>
     );
   }
 
-  const rows = data ?? [];
+  const rows = (rowsData ?? []) as RankRow[];
+  const month = latestMonth(rows);
 
-  // ----------------------------
-  // 1) Pivot per-tech (Rankings)
-  // ----------------------------
-  const techMap = new Map<string, PivotRow>();
-
-  for (const r of rows as any[]) {
-    const tech_id = String(r.tech_id ?? "").trim();
-    if (!tech_id) continue;
-
-    const code = pickMetricCode(String(r.metric_name ?? ""));
-    if (!code) continue;
-
-    const existing =
-      techMap.get(tech_id) ??
-      ({
-        tech_id,
-        tech_name: r.tech_name ?? null,
-        supervisor: r.supervisor ?? null,
-        c_code: r.c_code ?? null,
-        region: r.region ?? null,
-        fiscal_month_anchor: r.fiscal_month_anchor ?? null,
-
-        total_jobs: null,
-        tnps: null,
-        ftr: null,
-        tool_usage: null,
-      } as PivotRow);
-
-    existing.tech_name = existing.tech_name ?? r.tech_name ?? null;
-    existing.supervisor = existing.supervisor ?? r.supervisor ?? null;
-    existing.c_code = existing.c_code ?? r.c_code ?? null;
-    existing.region = existing.region ?? r.region ?? null;
-    existing.fiscal_month_anchor = existing.fiscal_month_anchor ?? r.fiscal_month_anchor ?? null;
-
-    const v = n(r.metric_value_num);
-
-    if (code === "total_jobs" && existing.total_jobs === null) existing.total_jobs = v;
-    if (code === "tnps" && existing.tnps === null) existing.tnps = v;
-    if (code === "ftr" && existing.ftr === null) existing.ftr = v;
-    if (code === "tool_usage" && existing.tool_usage === null) existing.tool_usage = v;
-
-    techMap.set(tech_id, existing);
-  }
-
-  const pivot = Array.from(techMap.values());
-  pivot.sort((a, b) => (n(b.total_jobs) ?? 0) - (n(a.total_jobs) ?? 0));
-
-  // ----------------------------
-  // 2) Region aggregation (components)
-  // ----------------------------
-  const regionMap = new Map<string, RegionAgg>();
-
-  for (const r of rows as any[]) {
-    const region = String(r.region ?? "").trim();
-    if (!region) continue;
-
-    const code = pickMetricCode(String(r.metric_name ?? ""));
-    if (!code) continue;
-
-    const value = n(r.metric_value_num) ?? 0;
-
-    const agg =
-      regionMap.get(region) ??
-      ({
-        region,
-        fiscal_month_anchor: r.fiscal_month_anchor ?? null,
-        headcount: 0,
-        total_jobs: 0,
-
-        promoters: 0,
-        detractors: 0,
-        surveys: 0,
-
-        ftr_fail_jobs: 0,
-        ftr_total_jobs: 0,
-
-        tu_result: 0,
-        tu_eligible: 0,
-
-        tnps_region: null,
-        ftr_region: null,
-        tool_usage_region: null,
-      } as RegionAgg);
-
-    agg.fiscal_month_anchor = agg.fiscal_month_anchor ?? (r.fiscal_month_anchor ?? null);
-
-    if (code === "total_jobs") agg.total_jobs += value;
-
-    if (code === "tnps_promoters") agg.promoters += value;
-    if (code === "tnps_detractors") agg.detractors += value;
-    if (code === "tnps_surveys") agg.surveys += value;
-
-    if (code === "ftr_fail_jobs") agg.ftr_fail_jobs += value;
-    if (code === "ftr_total_jobs") agg.ftr_total_jobs += value;
-
-    if (code === "tu_result") agg.tu_result += value;
-    if (code === "tu_eligible") agg.tu_eligible += value;
-
-    regionMap.set(region, agg);
-  }
-
-  // headcount from pivot (distinct techs per region)
-  for (const t of pivot) {
-    const region = String(t.region ?? "").trim();
-    if (!region) continue;
-    const agg = regionMap.get(region);
-    if (!agg) continue;
-    agg.headcount += 1;
-  }
-
-  const regionAggs = Array.from(regionMap.values()).map((a) => ({
-    ...a,
-    tnps_region: computeTNPS_Sheets(a.promoters, a.detractors, a.surveys),
-    ftr_region: computeFTRPct(a.ftr_fail_jobs, a.ftr_total_jobs),
-    tool_usage_region: computeToolUsagePct(a.tu_result, a.tu_eligible),
-  }));
-
-  regionAggs.sort((a, b) => b.total_jobs - a.total_jobs);
-
-  // ----------------------------
-  // 2.5) Roster lookup for director / RM labels
-  // ----------------------------
-  const techIdsForRoster = Array.from(new Set(pivot.map((p) => String(p.tech_id ?? "").trim()).filter(Boolean)));
-
-  const rosterByTech = new Map<
-    string,
-    { rm_effective: string | null; director: string | null; itg_supervisor: string | null }
-  >();
-
-  if (techIdsForRoster.length > 0) {
-    const { data: rosterRows, error: rosterErr } = await sb
-      .from("roster_v2")
-      .select("tech_id,regional_ops_manager,pc_ops_manager,director,itg_supervisor,status")
-      .eq("status", "Active")
-      .in("tech_id", techIdsForRoster);
-
-    if (!rosterErr) {
-      for (const rr of rosterRows ?? []) {
-        const tid = String((rr as any).tech_id ?? "").trim();
-        if (!tid) continue;
-
-        const regional = String((rr as any).regional_ops_manager ?? "").trim() || null;
-        const pc = String((rr as any).pc_ops_manager ?? "").trim() || null;
-        const director = String((rr as any).director ?? "").trim() || null;
-
-        rosterByTech.set(tid, {
-          rm_effective: regional ?? pc,
-          director,
-          itg_supervisor: (rr as any).itg_supervisor ?? null,
-        });
-      }
-    }
-  }
-
-  const regionRosterLabels = new Map<string, { rm: string; director: string; itg: string }>();
-
-  for (const rg of regionAggs) {
-    const techsInRegion = pivot
-      .filter((p) => String(p.region ?? "").trim() === rg.region)
-      .map((p) => String(p.tech_id ?? "").trim());
-
-    const rms: Array<string | null> = [];
-    const directors: Array<string | null> = [];
-    const itgs: Array<string | null> = [];
-
-    for (const tid of techsInRegion) {
-      const rr = rosterByTech.get(tid);
-      if (!rr) continue;
-      rms.push(rr.rm_effective);
-      directors.push(rr.director);
-      itgs.push(rr.itg_supervisor);
-    }
-
-    regionRosterLabels.set(rg.region, {
-      rm: summarizeOneOrMany(rms),
-      director: summarizeOneOrMany(directors),
-      itg: summarizeOneOrMany(itgs),
+  // Build people lookup maps
+  const regionPeopleByName = new Map<string, { director_label: string; rm_label: string }>();
+  for (const r of regionPeople ?? []) {
+    const key = String((r as any).region ?? "").trim();
+    if (!key) continue;
+    regionPeopleByName.set(key, {
+      director_label: String((r as any).director_label ?? "—"),
+      rm_label: String((r as any).rm_label ?? "—"),
     });
   }
 
-  // ----------------------------
-  // Header values
-  // ----------------------------
-  const totalJobsAll = pivot.reduce((acc, r) => acc + (n(r.total_jobs) ?? 0), 0);
-  const regionLabel = sp.region ?? (pivot[0]?.region ?? "—");
-  const fiscalMonthLabel =
-    sp.fiscal_month_anchor ?? (pivot[0]?.fiscal_month_anchor ?? regionAggs[0]?.fiscal_month_anchor ?? "—");
+  const divisionPeopleByName = new Map<string, { vp_of_operations: string; director_label: string }>();
+  for (const d of divisionPeople ?? []) {
+    const key = String((d as any).division_name ?? "").trim();
+    if (!key) continue;
+    divisionPeopleByName.set(key, {
+      vp_of_operations: String((d as any).vp_of_operations ?? "—"),
+      director_label: String((d as any).director_label ?? "—"),
+    });
+  }
 
-  const baseQuery = sp.fiscal_month_anchor ? `?fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}` : "";
+  // Scopes (locked, no toggles)
+  const divRows = rows.filter((r) => r.level === "division" && r.rank_scope === "all_in" && r.fiscal_month_anchor === month);
+  const regionRows = rows.filter((r) => r.level === "region" && r.rank_scope === "all_in" && r.fiscal_month_anchor === month);
+  const itgRows = rows.filter((r) => r.level === "itg_supervisor" && r.rank_scope === "region" && r.fiscal_month_anchor === month);
+  const companyRows = rows.filter((r) => r.level === "company" && r.rank_scope === "all_in" && r.fiscal_month_anchor === month);
+  const techRows = rows.filter((r) => r.level === "tech" && r.rank_scope === "region" && r.fiscal_month_anchor === month);
 
-  const componentsToggleHref = sp.region
-    ? `/metrics?region=${encodeURIComponent(sp.region)}${
-        sp.fiscal_month_anchor ? `&fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}` : ""
-      }&show_components=${showComponents ? "0" : "1"}`
-    : `/metrics${
-        sp.fiscal_month_anchor
-          ? `?fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}&show_components=${
-              showComponents ? "0" : "1"
-            }`
-          : `?show_components=${showComponents ? "0" : "1"}`
-      }`;
+  // Sort: Rank asc, then total jobs desc
+  const byRank = (a: RankRow, b: RankRow) =>
+    (n(a.rank_overall) ?? 9e15) - (n(b.rank_overall) ?? 9e15) || (n(b.total_jobs) ?? 0) - (n(a.total_jobs) ?? 0);
+
+  divRows.sort(byRank);
+  regionRows.sort(byRank);
+  itgRows.sort(byRank);
+  companyRows.sort(byRank);
+  techRows.sort(byRank);
 
   return (
-    <main style={{ padding: 40, maxWidth: 1200, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 18 }}>
+    <main style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>Metrics</h1>
-          <p style={{ marginTop: 6, opacity: 0.85 }}>KPI report view (tNPS / FTR / ToolUsage)</p>
+          <p style={{ marginTop: 6, opacity: 0.85 }}>
+            Month: <b>{month || "—"}</b> · KPIs Month-to-Date
+          </p>
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <a href="/" style={btnStyle}>
-            Back
-          </a>
-          <a href="/metrics/upload" style={btnStyle}>
-            Uploads →
-          </a>
-          <a href="/metrics/settings" style={btnStyle}>
-            Settings
-          </a>
+          <a href="/" style={btnStyle}>Back</a>
+          <a href="/metrics/upload" style={btnStyle}>Uploads →</a>
+          <a href="/metrics/settings" style={btnStyle}>Settings</a>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14, opacity: 0.92 }}>
-        <div style={{ fontWeight: 900 }}>Region: {String(regionLabel)}</div>
-        <div style={{ fontWeight: 900 }}>Headcount: {pivot.length}</div>
-        <div style={{ fontWeight: 900 }}>Job Count: {totalJobsAll.toLocaleString()}</div>
-        <div style={{ fontWeight: 900 }}>Fiscal Month: {String(fiscalMonthLabel)}</div>
+      <Section
+        title="Division"
+        subtitle="Division | VP | Director | Rank | Headcount | KPIs | Total Jobs"
+        rows={divRows}
+        columns={[
+          { key: "display_name", label: "Division", sticky: true },
+          {
+            key: "__vp",
+            label: "VP",
+            render: (r) => divisionPeopleByName.get(String(r.display_name ?? "").trim())?.vp_of_operations ?? "—",
+          },
+          {
+  key: "__director",
+  label: "Director",
+  render: (r) => {
+    const raw =
+      divisionPeopleByName.get(String(r.display_name ?? "").trim())?.director_label ?? "—";
 
-        <a href={componentsToggleHref} style={{ marginLeft: "auto", fontWeight: 900, textDecoration: "none" }}>
-          {showComponents ? "Hide components" : "Show components"}
-        </a>
+    if (raw === "—") return "—";
 
-        {sp.region ? (
-          <a href={`/metrics${baseQuery}`} style={{ fontWeight: 900, textDecoration: "none" }}>
-            View all regions →
-          </a>
-        ) : null}
+    const items = String(raw)
+      .split(/\s*,\s*/g)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {items.map((t, idx) => (
+          <div
+            key={idx}
+            style={{
+              display: "inline-flex",
+              alignSelf: "flex-start",
+              padding: "2px 8px",
+              border: "1px solid #333",
+              borderRadius: 999,
+              fontSize: 12,
+              opacity: 0.95,
+              whiteSpace: "nowrap", // 👈 prevents Gloyd / Bucknor wrapping
+            }}
+            title={t}
+          >
+            {t}
+          </div>
+        ))}
       </div>
+    );
+  },
+},
 
-      {/* Regions */}
-      <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ padding: 12, fontWeight: 950, borderBottom: "1px solid #ddd" }}>Regions</div>
 
-        <div style={gridWrap}>
-          <table style={table}>
-            <thead>
-              <tr>
-                <th style={thSticky}>Region</th>
-                <th style={th}>Director</th>
-                <th style={th}>Regional Manager</th>
-                <th style={th}>Headcount</th>
 
-                <th style={th}>tNPS</th>
-                <th style={th}>FTR%</th>
-                <th style={th}>ToolUsage%</th>
-                <th style={th}>Total Jobs</th>
+          { key: "rank_overall", label: "Rank", right: true },
+          { key: "headcount", label: "Headcount", right: true },
+          { key: "tnps", label: "tNPS", right: true, render: (r) => fmtNum(n(r.tnps), 2) },
+          { key: "ftr", label: "FTR%", right: true, render: (r) => fmtPctRatio(n(r.ftr), 1) },
+          { key: "tool_usage", label: "ToolUsage%", right: true, render: (r) => fmtPctRatio(n(r.tool_usage), 2) },
+          { key: "total_jobs", label: "Total Jobs", right: true, render: (r) => fmtInt(n(r.total_jobs) ?? 0) },
+        ]}
+      />
 
-                {showComponents ? (
-                  <>
-                    <th style={th}>Promoters</th>
-                    <th style={th}>Detractors</th>
-                    <th style={th}>Surveys</th>
+      <Section
+        title="Region"
+        subtitle="Region | Director | Regional/PC Manager | Rank | Headcount | KPIs | Total Jobs"
+        rows={regionRows}
+        columns={[
+          { key: "display_name", label: "Region", sticky: true },
+          {
+            key: "__director",
+            label: "Director",
+            render: (r) => regionPeopleByName.get(String(r.display_name ?? "").trim())?.director_label ?? "—",
+          },
+          {
+            key: "__rm",
+            label: "Regional/PC Manager",
+            render: (r) => regionPeopleByName.get(String(r.display_name ?? "").trim())?.rm_label ?? "—",
+          },
+          { key: "rank_overall", label: "Rank", right: true },
+          { key: "headcount", label: "Headcount", right: true },
+          { key: "tnps", label: "tNPS", right: true, render: (r) => fmtNum(n(r.tnps), 2) },
+          { key: "ftr", label: "FTR%", right: true, render: (r) => fmtPctRatio(n(r.ftr), 1) },
+          { key: "tool_usage", label: "ToolUsage%", right: true, render: (r) => fmtPctRatio(n(r.tool_usage), 2) },
+          { key: "total_jobs", label: "Total Jobs", right: true, render: (r) => fmtInt(n(r.total_jobs) ?? 0) },
+        ]}
+      />
 
-                    <th style={th}>FTR Fail</th>
-                    <th style={th}>FTR Total</th>
+      <Section
+        title="ITG Supervisor"
+        subtitle="ITG Supervisor | Region | Headcount | Rank | KPIs | Total Jobs"
+        rows={itgRows}
+        columns={[
+          { key: "display_name", label: "ITG Supervisor", sticky: true },
+          { key: "region", label: "Region" },
+          { key: "headcount", label: "Headcount", right: true },
+          { key: "rank_overall", label: "Rank", right: true },
+          { key: "tnps", label: "tNPS", right: true, render: (r) => fmtNum(n(r.tnps), 2) },
+          { key: "ftr", label: "FTR%", right: true, render: (r) => fmtPctRatio(n(r.ftr), 1) },
+          { key: "tool_usage", label: "ToolUsage%", right: true, render: (r) => fmtPctRatio(n(r.tool_usage), 2) },
+          { key: "total_jobs", label: "Total Jobs", right: true, render: (r) => fmtInt(n(r.total_jobs) ?? 0) },
+        ]}
+      />
 
-                    <th style={th}>TU Result</th>
-                    <th style={th}>TU Eligible</th>
-                  </>
-                ) : null}
-              </tr>
-            </thead>
-            <tbody>
-              {regionAggs.map((rg) => (
-                <tr key={rg.region}>
-                  <td style={tdSticky}>
-                    <a
-                      href={`/metrics?region=${encodeURIComponent(rg.region)}${
-                        sp.fiscal_month_anchor ? `&fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}` : ""
-                      }${showComponents ? `&show_components=1` : ""}`}
-                      style={{ textDecoration: "none", fontWeight: 900 }}
-                    >
-                      {rg.region}
-                    </a>
-                  </td>
+      <Section
+        title="Company"
+        subtitle="Company Name | Headcount | Rank | KPIs | Total Jobs"
+        rows={companyRows}
+        columns={[
+          { key: "display_name", label: "Company Name", sticky: true },
+          { key: "headcount", label: "Headcount", right: true },
+          { key: "rank_overall", label: "Rank", right: true },
+          { key: "tnps", label: "tNPS", right: true, render: (r) => fmtNum(n(r.tnps), 2) },
+          { key: "ftr", label: "FTR%", right: true, render: (r) => fmtPctRatio(n(r.ftr), 1) },
+          { key: "tool_usage", label: "ToolUsage%", right: true, render: (r) => fmtPctRatio(n(r.tool_usage), 2) },
+          { key: "total_jobs", label: "Total Jobs", right: true, render: (r) => fmtInt(n(r.total_jobs) ?? 0) },
+        ]}
+      />
 
-                  <td style={td}>{regionRosterLabels.get(rg.region)?.director ?? "—"}</td>
-                  <td style={td}>{regionRosterLabels.get(rg.region)?.rm ?? "—"}</td>
-
-                  <td style={tdRight}>{rg.headcount.toLocaleString()}</td>
-
-                  <td style={tdRight}>{fmtNum(rg.tnps_region, 2)}</td>
-                  <td style={tdRight}>{fmtPct(rg.ftr_region, 1)}</td>
-                  <td style={tdRight}>{fmtPct(rg.tool_usage_region, 2)}</td>
-                  <td style={tdRight}>{rg.total_jobs.toLocaleString()}</td>
-
-                  {showComponents ? (
-                    <>
-                      <td style={tdRight}>{rg.promoters.toLocaleString()}</td>
-                      <td style={tdRight}>{rg.detractors.toLocaleString()}</td>
-                      <td style={tdRight}>{rg.surveys.toLocaleString()}</td>
-
-                      <td style={tdRight}>{rg.ftr_fail_jobs.toLocaleString()}</td>
-                      <td style={tdRight}>{rg.ftr_total_jobs.toLocaleString()}</td>
-
-                      <td style={tdRight}>{rg.tu_result.toLocaleString()}</td>
-                      <td style={tdRight}>{rg.tu_eligible.toLocaleString()}</td>
-                    </>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div style={{ padding: 12, borderTop: "1px solid #ddd", fontSize: 12, opacity: 0.85 }}>
-          Regions shows rolled-up KPIs using component formulas. (Filtered to latest batch per region.)
-        </div>
-      </div>
-
-      {/* Rankings */}
-      <div style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ padding: 12, fontWeight: 950, borderBottom: "1px solid #ddd" }}>
-          Rankings{sp.region ? ` — ${sp.region}` : ""}
-        </div>
-
-        <div style={gridWrap}>
-          <table style={table}>
-            <thead>
-              <tr>
-                <th style={thSticky}>Tech ID</th>
-                <th style={th}>Company</th>
-                <th style={th}>Tech Name</th>
-                <th style={th}>ITG Supervisor</th>
-
-                <th style={th}>tNPS</th>
-                <th style={th}>FTR%</th>
-                <th style={th}>ToolUsage%</th>
-                <th style={th}>Total Jobs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pivot.map((r) => (
-                <tr key={r.tech_id}>
-                  <td style={tdSticky}>{r.tech_id}</td>
-                  <td style={td}>{r.c_code ?? "—"}</td>
-                  <td style={td}>{r.tech_name ?? "—"}</td>
-                  <td style={td}>{r.supervisor ?? "—"}</td>
-
-                  <td style={tdRight}>{fmtNum(r.tnps, 2)}</td>
-                  <td style={tdRight}>{fmtPct(r.ftr, 1)}</td>
-                  <td style={tdRight}>{fmtPct(r.tool_usage, 2)}</td>
-                  <td style={tdRight}>{(n(r.total_jobs) ?? 0).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div style={{ padding: 12, borderTop: "1px solid #ddd", fontSize: 12, opacity: 0.85 }}>
-          Rankings shows per-tech KPIs. (Filtered to latest batch per region.)
-        </div>
-      </div>
+      <Section
+        title="Tech"
+        subtitle="Tech ID | Company Code | ITG Supervisor | Supervisor | Region | Rank | KPIs | Total Jobs"
+        rows={techRows}
+        columns={[
+          { key: "tech_id", label: "Tech ID", sticky: true, render: (r) => r.tech_id ?? "—" },
+          { key: "company", label: "Company Code", render: (r) => r.company ?? "—" },
+          { key: "itg_supervisor", label: "ITG Supervisor", render: (r) => r.itg_supervisor ?? "—" },
+          { key: "supervisor", label: "Supervisor", render: (r) => r.supervisor ?? "—" },
+          { key: "region", label: "Region", render: (r) => r.region ?? "—" },
+          { key: "rank_overall", label: "Rank", right: true },
+          { key: "tnps", label: "tNPS", right: true, render: (r) => fmtNum(n(r.tnps), 2) },
+          { key: "ftr", label: "FTR%", right: true, render: (r) => fmtPctRatio(n(r.ftr), 1) },
+          { key: "tool_usage", label: "ToolUsage%", right: true, render: (r) => fmtPctRatio(n(r.tool_usage), 2) },
+          { key: "total_jobs", label: "Total Jobs", right: true, render: (r) => fmtInt(n(r.total_jobs) ?? 0) },
+        ]}
+      />
     </main>
   );
 }
 
-/** ----- styles ----- */
+type Col = {
+  key: string;
+  label: string;
+  right?: boolean;
+  sticky?: boolean;
+  render?: (row: RankRow) => React.ReactNode;
+};
 
+function Section({ title, subtitle, rows, columns }: { title: string; subtitle: string; rows: RankRow[]; columns: Col[] }) {
+  return (
+    <section style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 14, overflow: "hidden" }}>
+      <div style={{ padding: 12, borderBottom: "1px solid #ddd" }}>
+        <div style={{ fontWeight: 950 }}>{title}</div>
+        <div style={{ marginTop: 4, opacity: 0.8, fontSize: 12 }}>{subtitle}</div>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={table}>
+          <thead>
+            <tr>
+              {columns.map((c) => (
+                <th
+                  key={c.key}
+                  style={{
+                    ...thBase,
+                    ...(c.right ? { textAlign: "right" } : null),
+                    ...(c.sticky ? thSticky : null),
+                  }}
+                >
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.level_key}-${i}`}>
+                {columns.map((c) => {
+                  const val = c.render ? c.render(r) : (r as any)[c.key];
+                  return (
+                    <td
+                      key={c.key}
+                      style={{
+                        ...tdBase,
+                        ...(c.right ? { textAlign: "right", fontVariantNumeric: "tabular-nums" } : null),
+                        ...(c.sticky ? tdSticky : null),
+                        ...(c.sticky ? { fontWeight: 900 } : null),
+                      }}
+                    >
+                      {val ?? "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length} style={{ padding: 12, opacity: 0.7 }}>
+                  No rows found.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/** styles */
 const btnStyle: React.CSSProperties = {
   display: "inline-block",
   padding: "10px 14px",
@@ -648,11 +371,6 @@ const btnStyle: React.CSSProperties = {
   textDecoration: "none",
   fontWeight: 900,
 };
-
-const gridWrap: React.CSSProperties = {
-  overflowX: "auto",   // ✅ must be auto/scroll for horizontal swipe
-};
-
 
 const table: React.CSSProperties = {
   width: "100%",
@@ -669,19 +387,6 @@ const thBase: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-
-const th: React.CSSProperties = { ...thBase };
-
-const thSticky: React.CSSProperties = {
-  ...thBase,
-  position: "sticky",
-  left: 0,
-  zIndex: 3,          // ✅ higher than tdSticky
-  background: "inherit",
-};
-
-
-
 const tdBase: React.CSSProperties = {
   padding: "10px 10px",
   borderBottom: "1px solid #eee",
@@ -690,19 +395,16 @@ const tdBase: React.CSSProperties = {
   background: "inherit",
 };
 
-const td: React.CSSProperties = { ...tdBase };
+const thSticky: React.CSSProperties = {
+  position: "sticky",
+  left: 0,
+  zIndex: 3,
+  background: "inherit",
+};
 
 const tdSticky: React.CSSProperties = {
-  ...tdBase,
   position: "sticky",
   left: 0,
   zIndex: 2,
-  background: "inherit", // ✅ add this
-};
-
-
-const tdRight: React.CSSProperties = {
-  ...tdBase,
-  textAlign: "right",
-  fontVariantNumeric: "tabular-nums",
+  background: "inherit",
 };
