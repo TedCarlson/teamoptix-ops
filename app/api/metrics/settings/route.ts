@@ -22,25 +22,29 @@ type SettingRow = {
 };
 
 export async function GET(req: Request) {
-  const sb = supabaseAdmin();
-  const { searchParams } = new URL(req.url);
-  const scope = searchParams.get("scope") ?? "global";
+  try {
+    const sb = supabaseAdmin();
+    const { searchParams } = new URL(req.url);
+    const scope = searchParams.get("scope") ?? "global";
 
-  const { data, error } = await sb
-    .from("kpi_metric_settings_v1")
-    .select("metric_name,label,kpi_name,enabled,weight,sort_order,format,hidden,scope")
-    .eq("scope", scope)
-    .order("sort_order", { ascending: true })
-    .order("kpi_name", { ascending: true });
+    const { data, error } = await sb
+      .from("kpi_metric_settings_v1")
+      .select("metric_name,label,kpi_name,enabled,weight,sort_order,format,hidden,scope")
+      .eq("scope", scope)
+      .order("sort_order", { ascending: true })
+      .order("kpi_name", { ascending: true });
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, rows: data ?? [] });
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, rows: data ?? [] });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: e?.message || "Unknown error" }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {
-  const sb = supabaseAdmin();
-
   try {
+    const sb = supabaseAdmin();
+
     const body = await req.json().catch(() => null);
     const scope = String(body?.scope ?? "global");
     const rows: SettingRow[] = Array.isArray(body?.rows) ? body.rows : [];
@@ -60,26 +64,21 @@ export async function POST(req: Request) {
         const weight = Number(r.weight);
         const sort_order = Number(r.sort_order ?? 100);
 
+        const hidden = !!r.hidden;
+        const enabled = hidden ? false : !!r.enabled;
+
         return {
           scope,
           metric_name,
           label,
           kpi_name,
-          enabled: !!r.enabled,
-          hidden: !!r.hidden,
-          weight: Number.isFinite(weight) ? weight : 0,
+          enabled,
+          hidden,
+          weight: hidden ? 0 : Number.isFinite(weight) ? weight : 0,
           sort_order: Number.isFinite(sort_order) ? sort_order : 100,
           format: r.format === "percent" ? "percent" : "number",
         };
       });
-
-    // Prevent accidental enabling of hidden rows
-    for (const r of cleaned) {
-      if (r.hidden) {
-        r.enabled = false;
-        r.weight = 0;
-      }
-    }
 
     const { error } = await sb
       .from("kpi_metric_settings_v1")

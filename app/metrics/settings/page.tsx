@@ -1,11 +1,30 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 import SettingsClient from "./settingsClient";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+async function getBaseUrl() {
+  // 1) Explicit site URL if you set it (recommended)
+  const explicit = process.env.NEXT_PUBLIC_SITE_URL || process.env.SITE_URL || "";
+  if (explicit) return explicit.replace(/\/+$/, "");
+
+  // 2) Vercel automatic
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return `https://${vercel}`.replace(/\/+$/, "");
+
+  // 3) Fallback: infer from request headers (Next 16 typing)
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  if (!host) return "http://localhost:3000";
+  return `${proto}://${host}`.replace(/\/+$/, "");
+}
+
 async function loadSettings() {
-  const res = await fetch("/api/metrics/settings?scope=global", { cache: "no-store" });
+  const base = await getBaseUrl();
+  const res = await fetch(`${base}/api/metrics/settings?scope=global`, { cache: "no-store" });
   return res.json() as Promise<{ ok: boolean; rows?: any[]; error?: string }>;
 }
 
@@ -14,14 +33,24 @@ export default async function MetricsSettingsPage() {
 
   return (
     <main style={{ padding: 40, maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 18 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 12,
+          alignItems: "center",
+          marginBottom: 18,
+        }}
+      >
         <div>
           <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>Metrics Settings</h1>
           <p style={{ marginTop: 6, opacity: 0.85 }}>Enable KPIs and set weights (scope: global).</p>
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
-          <Link href="/metrics" style={btnStyle}>Back to Metrics</Link>
+          <Link href="/metrics" style={btnStyle}>
+            Back to Metrics
+          </Link>
         </div>
       </div>
 

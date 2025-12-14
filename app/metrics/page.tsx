@@ -1,5 +1,4 @@
 import { createClient } from "@supabase/supabase-js";
-import { headers } from "next/headers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,18 +12,8 @@ type SearchParams = {
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anon) {
-    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  }
+  if (!url || !anon) throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY");
   return createClient(url, anon, { auth: { persistSession: false } });
-}
-
-function getBaseUrl() {
-  const h = headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  if (!host) return "";
-  return `${proto}://${host}`;
 }
 
 function n(v: any): number | null {
@@ -60,42 +49,26 @@ function summarizeOneOrMany(vals: Array<string | null | undefined>) {
   return `Multiple (${u.length})`;
 }
 
-/**
- * Metric mapping.
- *
- * - Rankings use per-tech values:
- *   tNPS Rate, FTR%, ToolUsage% (if present)
- *
- * - Region summary uses ratio-of-summed-components:
- *   tNPS: (ΣPromoters*100 + ΣDetractors*-100) / ΣSurveys
- *   FTR%: ((ΣTotal - ΣFail) / ΣTotal) * 100
- *   ToolUsage%: (ΣTUResult / ΣTUEligibleJobs) * 100
- */
+/** ----- Metric mapping + normalization ----- */
 type MetricCode =
-  // per-tech values (Rankings)
   | "tnps"
   | "ftr"
   | "tool_usage"
   | "total_jobs"
-  // tNPS components
   | "tnps_promoters"
   | "tnps_detractors"
   | "tnps_surveys"
-  // FTR components
   | "ftr_fail_jobs"
   | "ftr_total_jobs"
-  // Tool Usage components
   | "tu_result"
   | "tu_eligible";
 
 const METRIC_MAP: Record<MetricCode, string[]> = {
-  // per-tech values
   tnps: ["tNPS Rate", "tNPS", "TNPS", "tnps", "tnps rate", "tnpsrate"],
   ftr: ["FTR%", "FTR", "ftr%", "ftr", "ftrpercent"],
   tool_usage: ["ToolUsage", "Tool Usage", "ToolUsage%", "toolusagepercent"],
   total_jobs: ["Total Jobs", "TotalJobs", "totaljobs"],
 
-  // components
   tnps_promoters: ["Promoters"],
   tnps_detractors: ["Detractors"],
   tnps_surveys: ["tNPS Surveys", "TNPS Surveys", "tnpssurveys"],
@@ -111,32 +84,46 @@ function normalizeMetricName(s: string) {
   return String(s ?? "")
     .trim()
     .toLowerCase()
-    .replace(/[%\s_-]+/g, ""); // ignore spaces, %, underscores, dashes
+    .replace(/[%\s_-]+/g, "");
 }
 
 function pickMetricCode(metricName: string): MetricCode | null {
   const norm = normalizeMetricName(metricName);
-
   for (const [code, names] of Object.entries(METRIC_MAP) as any) {
-    for (const n of names as string[]) {
-      if (normalizeMetricName(n) === norm) return code as MetricCode;
+    for (const candidate of names as string[]) {
+      if (normalizeMetricName(candidate) === norm) return code as MetricCode;
     }
   }
   return null;
 }
 
+/** ----- Region formulas ----- */
+function computeTNPS_Sheets(promoters: number, detractors: number, surveys: number): number | null {
+  if (!surveys || surveys <= 0) return null;
+  return (promoters * 100 + detractors * -100) / surveys;
+}
+function computeFTRPct(fail: number, total: number): number | null {
+  if (!total || total <= 0) return null;
+  return ((total - fail) / total) * 100;
+}
+function computeToolUsagePct(result: number, eligible: number): number | null {
+  if (!eligible || eligible <= 0) return null;
+  return (result / eligible) * 100;
+}
+
+/** ----- Types ----- */
 type PivotRow = {
   tech_id: string;
   tech_name: string | null;
-  supervisor: string | null; // ITG supervisor
+  supervisor: string | null;
   company: string | null;
   region: string | null;
   fiscal_month_anchor: string | null;
 
   total_jobs: number | null;
-  tnps: number | null; // tNPS Rate (per-tech)
-  ftr: number | null; // FTR% (per-tech)
-  tool_usage: number | null; // ToolUsage% (per-tech if present)
+  tnps: number | null;
+  ftr: number | null;
+  tool_usage: number | null;
 };
 
 type RegionAgg = {
@@ -146,7 +133,6 @@ type RegionAgg = {
   headcount: number;
   total_jobs: number;
 
-  // components
   promoters: number;
   detractors: number;
   surveys: number;
@@ -157,52 +143,34 @@ type RegionAgg = {
   tu_result: number;
   tu_eligible: number;
 
-  // computed
   tnps_region: number | null;
   ftr_region: number | null;
   tool_usage_region: number | null;
 };
 
-function computeTNPS_Sheets(promoters: number, detractors: number, surveys: number): number | null {
-  if (!surveys || surveys <= 0) return null;
-  return (promoters * 100 + detractors * -100) / surveys;
-}
-
-function computeFTRPct(fail: number, total: number): number | null {
-  if (!total || total <= 0) return null;
-  return ((total - fail) / total) * 100;
-}
-
-function computeToolUsagePct(result: number, eligible: number): number | null {
-  if (!eligible || eligible <= 0) return null;
-  return (result / eligible) * 100;
-}
-
 type SettingRow = {
   metric_name: string;
-  kpi_name: string | null;
-  label: string | null;
   enabled: boolean;
   hidden: boolean;
-  sort_order: number | null;
-  format: "number" | "percent" | null;
 };
 
-async function loadMetricSettings(scope = "global"): Promise<SettingRow[]> {
-  try {
-    const base = getBaseUrl();
-    const res = await fetch(`${base}/api/metrics/settings?scope=${encodeURIComponent(scope)}`, { cache: "no-store" });
-    const json: any = await res.json().catch(() => null);
-    if (!json?.ok) return [];
-    const rows = Array.isArray(json?.rows) ? json.rows : [];
-    return rows as SettingRow[];
-  } catch {
-    return [];
-  }
+/** ----- Settings loader (fails open if RLS blocks) ----- */
+async function loadMetricSettings(sb: ReturnType<typeof getSupabase>, scope: string): Promise<SettingRow[]> {
+  const { data, error } = await sb
+    .from("kpi_metric_settings_v1")
+    .select("metric_name,enabled,hidden")
+    .eq("scope", scope);
+
+  if (error) return [];
+  return (data ?? []).map((r: any) => ({
+    metric_name: String(r.metric_name ?? ""),
+    enabled: !!r.enabled,
+    hidden: !!r.hidden,
+  }));
 }
 
 function buildNeededMetricNamesFromSettings(settings: SettingRow[]) {
-  // Always include these for region rollups + rankings
+  // Always include these for region rollups + primary KPIs
   const required = new Set<string>([
     ...METRIC_MAP.tnps,
     ...METRIC_MAP.ftr,
@@ -220,7 +188,7 @@ function buildNeededMetricNamesFromSettings(settings: SettingRow[]) {
     ...METRIC_MAP.tu_eligible,
   ]);
 
-  // If settings exist, add enabled raw metric_names (these are exact raw headers)
+  // Add any enabled extra raw metrics
   for (const r of settings ?? []) {
     if (!r) continue;
     if (r.hidden) continue;
@@ -232,23 +200,54 @@ function buildNeededMetricNamesFromSettings(settings: SettingRow[]) {
   return Array.from(required);
 }
 
+/** ----- Latest batch filter: drives “most recent wins” ----- */
+async function getLatestBatchIds(
+  sb: ReturnType<typeof getSupabase>,
+  region?: string,
+  fiscal_month_anchor?: string
+): Promise<string[]> {
+  let q = sb
+    .from("kpi_batches_v1_latest_by_region")
+    .select("batch_id,region,fiscal_month_anchor");
+
+  if (region) q = q.eq("region", region);
+  if (fiscal_month_anchor) q = q.eq("fiscal_month_anchor", fiscal_month_anchor);
+
+  const { data, error } = await q;
+  if (error) return [];
+
+  const ids = (data ?? [])
+    .map((r: any) => String(r.batch_id ?? "").trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(ids));
+}
+
 export default async function MetricsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const sp = await searchParams;
   const sb = getSupabase();
 
   const showComponents = sp.show_components === "1";
 
-  // Settings control which extra raw metrics we pull (enabled/hidden), but we always include required components.
-  const settings = await loadMetricSettings("global");
+  // 1) Determine “active dataset” = latest batches (optionally by region/month)
+  const latestBatchIds = await getLatestBatchIds(sb, sp.region, sp.fiscal_month_anchor);
+
+  // If the view returns nothing (misconfigured / empty), fail open to avoid a blank page.
+  const mustFilterByBatch = latestBatchIds.length > 0;
+
+  // 2) Load settings (optional)
+  const settings = await loadMetricSettings(sb, "global");
   const neededMetricNames = buildNeededMetricNamesFromSettings(settings);
 
+  // 3) Fetch KPI master rows
   let q = sb
     .from("kpi_master_v1")
-    .select("tech_id, tech_name, supervisor, company, region, fiscal_month_anchor, metric_name, metric_value_num")
+    .select("batch_id,tech_id,tech_name,supervisor,company,region,fiscal_month_anchor,metric_name,metric_value_num")
     .in("metric_name", neededMetricNames);
 
   if (sp.region) q = q.eq("region", sp.region);
   if (sp.fiscal_month_anchor) q = q.eq("fiscal_month_anchor", sp.fiscal_month_anchor);
+  if (mustFilterByBatch) q = q.in("batch_id", latestBatchIds);
 
   const { data, error } = await q;
 
@@ -272,7 +271,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   const rows = data ?? [];
 
   // ----------------------------
-  // 1) Pivot into per-tech rows (Rankings)
+  // 1) Pivot per-tech (Rankings)
   // ----------------------------
   const techMap = new Map<string, PivotRow>();
 
@@ -319,7 +318,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   pivot.sort((a, b) => (n(b.total_jobs) ?? 0) - (n(a.total_jobs) ?? 0));
 
   // ----------------------------
-  // 2) Region aggregation (ratio of summed components)
+  // 2) Region aggregation (components)
   // ----------------------------
   const regionMap = new Map<string, RegionAgg>();
 
@@ -391,7 +390,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   regionAggs.sort((a, b) => b.total_jobs - a.total_jobs);
 
   // ----------------------------
-  // 2.5) Roster lookup (Regional Manager + ITG Supervisor) for Regions grid
+  // 2.5) Roster lookup for director / RM labels
   // ----------------------------
   const techIdsForRoster = Array.from(new Set(pivot.map((p) => String(p.tech_id ?? "").trim()).filter(Boolean)));
 
@@ -403,7 +402,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   if (techIdsForRoster.length > 0) {
     const { data: rosterRows, error: rosterErr } = await sb
       .from("roster_v2")
-      .select("tech_id, regional_ops_manager, pc_ops_manager, director, itg_supervisor, status")
+      .select("tech_id,regional_ops_manager,pc_ops_manager,director,itg_supervisor,status")
       .eq("status", "Active")
       .in("tech_id", techIdsForRoster);
 
@@ -411,6 +410,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
       for (const rr of rosterRows ?? []) {
         const tid = String((rr as any).tech_id ?? "").trim();
         if (!tid) continue;
+
         const regional = String((rr as any).regional_ops_manager ?? "").trim() || null;
         const pc = String((rr as any).pc_ops_manager ?? "").trim() || null;
         const director = String((rr as any).director ?? "").trim() || null;
@@ -466,7 +466,9 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
       }&show_components=${showComponents ? "0" : "1"}`
     : `/metrics${
         sp.fiscal_month_anchor
-          ? `?fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}&show_components=${showComponents ? "0" : "1"}`
+          ? `?fiscal_month_anchor=${encodeURIComponent(sp.fiscal_month_anchor)}&show_components=${
+              showComponents ? "0" : "1"
+            }`
           : `?show_components=${showComponents ? "0" : "1"}`
       }`;
 
@@ -585,7 +587,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         </div>
 
         <div style={{ padding: 12, borderTop: "1px solid #ddd", fontSize: 12, opacity: 0.85 }}>
-          Regions shows rolled-up KPIs using component formulas.
+          Regions shows rolled-up KPIs using component formulas. (Filtered to latest batch per region.)
         </div>
       </div>
 
@@ -629,14 +631,14 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         </div>
 
         <div style={{ padding: 12, borderTop: "1px solid #ddd", fontSize: 12, opacity: 0.85 }}>
-          Rankings shows per-tech KPIs.
+          Rankings shows per-tech KPIs. (Filtered to latest batch per region.)
         </div>
       </div>
     </main>
   );
 }
 
-// ----- styles -----
+/** ----- styles ----- */
 
 const btnStyle: React.CSSProperties = {
   display: "inline-block",
@@ -653,7 +655,7 @@ const gridWrap: React.CSSProperties = {
 
 const table: React.CSSProperties = {
   width: "100%",
-  borderCollapse: "separate", // required for sticky borders to behave
+  borderCollapse: "separate",
   borderSpacing: 0,
 };
 
@@ -670,14 +672,12 @@ const thBase: React.CSSProperties = {
   zIndex: 3,
 };
 
-const th: React.CSSProperties = {
-  ...thBase,
-};
+const th: React.CSSProperties = { ...thBase };
 
 const thSticky: React.CSSProperties = {
   ...thBase,
   left: 0,
-  zIndex: 4, // above other headers
+  zIndex: 4,
 };
 
 const tdBase: React.CSSProperties = {
@@ -688,9 +688,7 @@ const tdBase: React.CSSProperties = {
   background: "white",
 };
 
-const td: React.CSSProperties = {
-  ...tdBase,
-};
+const td: React.CSSProperties = { ...tdBase };
 
 const tdSticky: React.CSSProperties = {
   ...tdBase,
