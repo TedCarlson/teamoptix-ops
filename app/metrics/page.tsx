@@ -650,7 +650,7 @@ const btnStyle: React.CSSProperties = {
 };
 
 const gridWrap: React.CSSProperties = {
-  overflowX: "auto",
+  overflowX: "inherit",
 };
 
 const table: React.CSSProperties = {
@@ -668,7 +668,7 @@ const thBase: React.CSSProperties = {
   whiteSpace: "nowrap",
   position: "sticky",
   top: 0,
-  background: "white",
+  background: "inherit",
   zIndex: 3,
 };
 
@@ -685,7 +685,7 @@ const tdBase: React.CSSProperties = {
   borderBottom: "1px solid #eee",
   fontSize: 13,
   whiteSpace: "nowrap",
-  background: "white",
+  background: "inherit",
 };
 
 const td: React.CSSProperties = { ...tdBase };
