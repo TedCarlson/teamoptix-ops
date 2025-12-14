@@ -116,7 +116,7 @@ type PivotRow = {
   tech_id: string;
   tech_name: string | null;
   supervisor: string | null;
-  company: string | null;
+  c_code: string | null;
   region: string | null;
   fiscal_month_anchor: string | null;
 
@@ -242,7 +242,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
   // 3) Fetch KPI master rows
   let q = sb
     .from("kpi_master_v1")
-    .select("batch_id,tech_id,tech_name,supervisor,company,region,fiscal_month_anchor,metric_name,metric_value_num")
+    .select("batch_id,tech_id,tech_name,supervisor,c_code,region,fiscal_month_anchor,metric_name,metric_value_num")
     .in("metric_name", neededMetricNames);
 
   if (sp.region) q = q.eq("region", sp.region);
@@ -288,7 +288,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
         tech_id,
         tech_name: r.tech_name ?? null,
         supervisor: r.supervisor ?? null,
-        company: r.company ?? null,
+        c_code: r.c_code ?? null,
         region: r.region ?? null,
         fiscal_month_anchor: r.fiscal_month_anchor ?? null,
 
@@ -300,7 +300,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
 
     existing.tech_name = existing.tech_name ?? r.tech_name ?? null;
     existing.supervisor = existing.supervisor ?? r.supervisor ?? null;
-    existing.company = existing.company ?? r.company ?? null;
+    existing.c_code = existing.c_code ?? r.c_code ?? null;
     existing.region = existing.region ?? r.region ?? null;
     existing.fiscal_month_anchor = existing.fiscal_month_anchor ?? r.fiscal_month_anchor ?? null;
 
@@ -616,7 +616,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
               {pivot.map((r) => (
                 <tr key={r.tech_id}>
                   <td style={tdSticky}>{r.tech_id}</td>
-                  <td style={td}>{r.company ?? "—"}</td>
+                  <td style={td}>{r.c_code ?? "—"}</td>
                   <td style={td}>{r.tech_name ?? "—"}</td>
                   <td style={td}>{r.supervisor ?? "—"}</td>
 
