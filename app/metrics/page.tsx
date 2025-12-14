@@ -650,8 +650,9 @@ const btnStyle: React.CSSProperties = {
 };
 
 const gridWrap: React.CSSProperties = {
-  overflowX: "inherit",
+  overflowX: "auto",   // ✅ must be auto/scroll for horizontal swipe
 };
+
 
 const table: React.CSSProperties = {
   width: "100%",
@@ -666,19 +667,20 @@ const thBase: React.CSSProperties = {
   fontSize: 12,
   opacity: 0.9,
   whiteSpace: "nowrap",
-  position: "sticky",
-  top: 0,
-  background: "inherit",
-  zIndex: 3,
 };
+
 
 const th: React.CSSProperties = { ...thBase };
 
 const thSticky: React.CSSProperties = {
   ...thBase,
+  position: "sticky",
   left: 0,
-  zIndex: 4,
+  zIndex: 3,          // ✅ higher than tdSticky
+  background: "inherit",
 };
+
+
 
 const tdBase: React.CSSProperties = {
   padding: "10px 10px",
@@ -695,7 +697,9 @@ const tdSticky: React.CSSProperties = {
   position: "sticky",
   left: 0,
   zIndex: 2,
+  background: "inherit", // ✅ add this
 };
+
 
 const tdRight: React.CSSProperties = {
   ...tdBase,
