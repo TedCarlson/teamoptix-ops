@@ -398,13 +398,12 @@ export default async function MetricsPage({
           <a href="/" style={navBtnStyle()}>
             Back
           </a>
-          <a href="/metrics/upload" style={navBtnStyle()}>
-            Uploads →
-          </a>
-          <a href="/metrics/settings" style={navBtnStyle()}>
-            Settings
+
+          <a href="/admin" style={navBtnStyle()}>
+            Admin →
           </a>
         </div>
+
       </div>
 
       <Section
