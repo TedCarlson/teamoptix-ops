@@ -1,61 +1,31 @@
+// app/roster/page.tsx
 import React from "react";
 import { createClient } from "@supabase/supabase-js";
 import Filters from "./Filters";
+import { UI, pillBase } from "../../lib/ui";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** =========================================================
- *  UI CONSTANTS (EDIT HERE)
+ *  PAGE-SPECIFIC UI (layout + colors live here)
+ *  Shared UI primitives come from /lib/ui.ts
  *  ========================================================= */
-const UI = {
-  // Typography
-  fontSize: {
-    body: 14,
-    primary: 14, // name line
-    pill: 12, // chips/buttons/pills
-    small: 11,
+const PAGE = {
+  maxWidth: 900,
+  padding: 40,
+  card: {
+    radius: 12,
+    border: "1px solid #ddd",
+    padding: 10,
   },
-  fontWeight: {
-    normal: 600,
-    strong: 800,
-    bold: 900,
-  },
-
-  // Pill sizing (View/Edit, Status, Details)
-  pillPaddingY: 6,
-  pillPaddingX: 10,
-  pillRadius: 999,
-  pillBorder: "1px solid #ddd",
   statusText: {
-    active: "#3f6fd7ff",   // blue
+    active: "#3f6fd7ff", // blue
     inactive: "#6B7280", // gray
   },
-
-  // Layout
-  pageMaxWidth: 900,
-  pagePadding: 40,
-  cardRadius: 12,
-  cardBorder: "1px solid #ddd",
-  cardPadding: 10,
 };
 
 const COLLATOR = new Intl.Collator("en-US", { sensitivity: "base", numeric: true });
-
-function pillBase(extra?: React.CSSProperties): React.CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: `${UI.pillPaddingY}px ${UI.pillPaddingX}px`,
-    borderRadius: UI.pillRadius,
-    border: UI.pillBorder,
-    fontSize: UI.fontSize.pill,
-    lineHeight: "16px",
-    fontWeight: UI.fontWeight.bold,
-    whiteSpace: "nowrap",
-    ...extra,
-  };
-}
 
 type RosterRow = {
   roster_id: string;
@@ -188,34 +158,22 @@ export default async function RosterPage({
     rows = (data ?? []) as RosterRow[];
   }
 
+  const navBtn = (extra?: React.CSSProperties) =>
+    pillBase({
+      padding: "10px 14px",
+      borderRadius: 12,
+      fontWeight: UI.fontWeight.strong,
+      ...extra,
+    });
+
   return (
-    <main style={{ padding: UI.pagePadding, maxWidth: UI.pageMaxWidth, margin: "0 auto" }}>
+    <main style={{ padding: PAGE.padding, maxWidth: PAGE.maxWidth, margin: "0 auto" }}>
       <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
-        <a
-          href="/"
-          style={{
-            display: "inline-block",
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            textDecoration: "none",
-            fontWeight: UI.fontWeight.strong,
-          }}
-        >
+        <a href="/" style={navBtn({ textDecoration: "none" })}>
           ← Back
         </a>
 
-        <a
-          href={`/roster/edit?returnTo=${encodeURIComponent(returnTo)}`}
-          style={{
-            display: "inline-block",
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "1px solid #ddd",
-            textDecoration: "none",
-            fontWeight: UI.fontWeight.strong,
-          }}
-        >
+        <a href={`/roster/edit?returnTo=${encodeURIComponent(returnTo)}`} style={navBtn({ textDecoration: "none" })}>
           + Add / Update
         </a>
       </div>
@@ -223,7 +181,7 @@ export default async function RosterPage({
       <h1 style={{ fontSize: 34, fontWeight: UI.fontWeight.strong, marginBottom: 8 }}>Roster Management</h1>
 
       {optionsErrorMsg ? (
-        <div style={{ padding: 14, border: "1px solid #ff6b6b", borderRadius: UI.cardRadius, marginTop: 12 }}>
+        <div style={{ padding: 14, border: "1px solid #ff6b6b", borderRadius: PAGE.card.radius, marginTop: 12 }}>
           <strong>Supabase error (loading filter options):</strong> {optionsErrorMsg}
         </div>
       ) : null}
@@ -232,12 +190,19 @@ export default async function RosterPage({
 
       <div style={{ marginTop: 18 }}>
         {errorMsg ? (
-          <div style={{ padding: 14, border: "1px solid #ff6b6b", borderRadius: UI.cardRadius }}>
+          <div style={{ padding: 14, border: "1px solid #ff6b6b", borderRadius: PAGE.card.radius }}>
             <strong>Supabase error (loading roster rows):</strong> {errorMsg}
           </div>
         ) : (
           <>
-            <div style={{ marginBottom: 10, opacity: 0.85, fontWeight: UI.fontWeight.strong, fontSize: UI.fontSize.body }}>
+            <div
+              style={{
+                marginBottom: 10,
+                opacity: 0.85,
+                fontWeight: UI.fontWeight.strong,
+                fontSize: UI.fontSize.body,
+              }}
+            >
               Showing {rows.length} rows
             </div>
 
@@ -245,20 +210,16 @@ export default async function RosterPage({
               {rows.map((r) => (
                 <div
                   key={r.roster_id}
-                  style={{ padding: UI.cardPadding, border: UI.cardBorder, borderRadius: UI.cardRadius }}
+                  style={{
+                    padding: PAGE.card.padding,
+                    border: PAGE.card.border,
+                    borderRadius: PAGE.card.radius,
+                  }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
                     {/* Left: Name/Tech + Details pill inline */}
                     <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          flexWrap: "wrap",
-                          minWidth: 0,
-                        }}
-                      >
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", minWidth: 0 }}>
                         <div style={{ fontWeight: UI.fontWeight.bold, fontSize: UI.fontSize.primary, lineHeight: 1.2 }}>
                           {r.full_name ?? "(no name)"}{" "}
                           <span style={{ opacity: 0.7, fontWeight: UI.fontWeight.strong }}>
@@ -291,7 +252,15 @@ export default async function RosterPage({
                     </div>
 
                     {/* Right: View/Edit pill + Status pill */}
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 10,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        justifyContent: "flex-end",
+                      }}
+                    >
                       <a
                         href={`/roster/edit?roster_id=${encodeURIComponent(r.roster_id)}&returnTo=${encodeURIComponent(
                           returnTo
@@ -306,7 +275,7 @@ export default async function RosterPage({
                         return (
                           <span
                             style={pillBase({
-                              color: isActive ? UI.statusText.active : UI.statusText.inactive,
+                              color: isActive ? PAGE.statusText.active : PAGE.statusText.inactive,
                             })}
                           >
                             Status: {isActive ? "Active" : "Inactive"}
@@ -319,7 +288,7 @@ export default async function RosterPage({
               ))}
 
               {rows.length === 0 ? (
-                <div style={{ padding: 14, border: "1px solid #ddd", borderRadius: UI.cardRadius, opacity: 0.9 }}>
+                <div style={{ padding: 14, border: PAGE.card.border, borderRadius: PAGE.card.radius, opacity: 0.9 }}>
                   No rows found for the current filters.
                 </div>
               ) : null}

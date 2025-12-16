@@ -1,11 +1,25 @@
+// app/metrics/page.tsx
 import React from "react";
 import { createClient } from "@supabase/supabase-js";
+import { UI, pillBase } from "../../lib/ui";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** deterministic string compare (server + client) */
 const COLLATOR = new Intl.Collator("en-US", { sensitivity: "base", numeric: true });
+
+/** =========================================================
+ *  PAGE-SPECIFIC UI (layout-only)
+ *  Shared UI primitives come from /lib/ui.ts
+ *  ========================================================= */
+const PAGE = {
+  padding: 24,
+  maxWidth: 1400,
+  sectionRadius: 14,
+  border: "1px solid #ddd",
+  divider: "1px solid #ddd",
+};
 
 function exportUrl(params: Record<string, string>) {
   const qs = new URLSearchParams(params).toString();
@@ -138,11 +152,98 @@ function unwrapTd(node: React.ReactNode): React.ReactNode {
   return node;
 }
 
+/**
+ * Final hard gate: ensure cell content can never hydrate into table structure.
+ * - blocks custom component elements in cells (only DOM tags / Fragment allowed)
+ * - blocks any table tags
+ * - normalizes nullish/booleans to "—"
+ */
+type CellNode = Exclude<React.ReactNode, undefined>;
+
+function isSafeElementType(t: any) {
+  return typeof t === "string" || t === React.Fragment;
+}
+
+function sanitizeCellNode(node: React.ReactNode): CellNode {
+  if (node === null || node === undefined || typeof node === "boolean") return "—";
+
+  if (Array.isArray(node)) {
+    const out = node.map(sanitizeCellNode);
+    const nonDash = out.filter((x) => x !== "—");
+    return nonDash.length ? out : "—";
+  }
+
+  if (React.isValidElement(node)) {
+    // Block custom components inside table cells (can render <tr>/<td> internally)
+    if (!isSafeElementType(node.type)) return "—";
+
+    // Block table tags directly
+    if (typeof node.type === "string" && DISALLOWED_TABLE_TAGS.has(node.type)) return "—";
+
+    // Block disallowed table tags nested inside children
+    const kids = (node.props as any)?.children;
+    if (kids && containsDisallowedTableTags(kids)) return "—";
+
+    return node as CellNode;
+  }
+
+  return node as CellNode;
+}
+
+/** =========================================================
+ *  Small UI helpers (Metrics-specific variants)
+ *  ========================================================= */
+function navBtnStyle(extra?: React.CSSProperties): React.CSSProperties {
+  return pillBase({
+    padding: "10px 14px",
+    borderRadius: 12,
+    fontWeight: UI.fontWeight.strong,
+    textDecoration: "none",
+    color: "inherit",
+    ...extra,
+  });
+}
+
+function chipBtnStyle(selected: boolean, extra?: React.CSSProperties): React.CSSProperties {
+  return pillBase({
+    cursor: "pointer",
+    userSelect: "none",
+    color: "inherit",
+    background: "transparent",
+    fontWeight: UI.fontWeight.strong,
+    // Selected state: subtle inset fill that adapts to theme via currentColor
+    boxShadow: selected ? "inset 0 0 0 999px rgba(255,255,255,0.12)" : "none",
+    ...extra,
+  });
+}
+
+
+function tagPillStyle(extra?: React.CSSProperties): React.CSSProperties {
+  return {
+    display: "block",
+    padding: 0,
+    margin: 0,
+    border: "none",
+    borderRadius: 0,
+    background: "transparent",
+    fontWeight: UI.fontWeight.normal, // not bold
+    fontSize: 13,                     // match bodyCell fontSize
+    lineHeight: "18px",
+    opacity: 0.95,
+    whiteSpace: "nowrap",
+    ...extra,
+  };
+}
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
 export default async function MetricsPage({
   searchParams,
 }: {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: SearchParams | Promise<SearchParams>;
 }) {
+  const sp = await Promise.resolve(searchParams);
+
   const sb = getSupabase();
 
   const [
@@ -158,7 +259,7 @@ export default async function MetricsPage({
   const fatalError = rankingsError ?? regionPeopleError ?? divisionPeopleError;
   if (fatalError) {
     return (
-      <main style={{ padding: 24 }}>
+      <main style={{ padding: PAGE.padding }}>
         <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>Metrics</h1>
         <div style={{ marginTop: 12, padding: 12, border: "1px solid #f2c2c2", borderRadius: 14 }}>
           <div style={{ fontWeight: 950 }}>Could not load metrics data</div>
@@ -171,11 +272,12 @@ export default async function MetricsPage({
   const rows = (rowsData ?? []) as RankRow[];
 
   const monthFromUrl = firstParam(searchParams?.month).trim();
+
   const month = (monthFromUrl || latestMonth(rows)).trim();
 
   // URL param selections (IDs)
-  const selectedDivisionId = firstParam(searchParams?.division_id).trim();
-  const selectedRegionId = firstParam(searchParams?.region_id).trim();
+  const selectedDivisionId = firstParam(sp?.division_id).trim();
+  const selectedRegionId = firstParam(sp?.region_id).trim();
 
   // Build people lookup maps
   const regionPeopleByName = new Map<string, { director_label: string; rm_label: string }>();
@@ -267,6 +369,8 @@ export default async function MetricsPage({
   const regionIdIsValid = !selectedRegionId || regionOptions.some((o) => o.id === selectedRegionId);
   const effectiveRegionId = regionIdIsValid ? selectedRegionId : "";
 
+  const filteredDivRows = divRows.filter((r) => (effectiveDivisionId ? s(r.division_id) === effectiveDivisionId : true));
+
   // Cascade filters: Division → Region → (ITG/Tech spill)
   const filteredRegionRows = regionRows
     .filter((r) => (effectiveDivisionId ? s(r.division_id) === effectiveDivisionId : true))
@@ -281,7 +385,7 @@ export default async function MetricsPage({
     .filter((r) => (effectiveRegionId ? s(r.region_id) === effectiveRegionId : true));
 
   return (
-    <main style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+    <main style={{ padding: PAGE.padding, maxWidth: PAGE.maxWidth, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>Metrics</h1>
@@ -290,14 +394,14 @@ export default async function MetricsPage({
           </p>
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
-          <a href="/" style={btnStyle}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <a href="/" style={navBtnStyle()}>
             Back
           </a>
-          <a href="/metrics/upload" style={btnStyle}>
+          <a href="/metrics/upload" style={navBtnStyle()}>
             Uploads →
           </a>
-          <a href="/metrics/settings" style={btnStyle}>
+          <a href="/metrics/settings" style={navBtnStyle()}>
             Settings
           </a>
         </div>
@@ -305,26 +409,13 @@ export default async function MetricsPage({
 
       <Section
         title="Division"
-        rows={divRows}
+        rows={filteredDivRows}
         controls={
           <form method="GET" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Division</label>
+            <label style={{ fontSize: UI.fontSize.small, opacity: 0.8 }}>Division</label>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                type="submit"
-                name="division_id"
-                value=""
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #ddd",
-                  background: effectiveDivisionId === "" ? "#eee" : "inherit",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
+              <button type="submit" name="division_id" value="" style={chipBtnStyle(effectiveDivisionId === "")}>
                 All Divisions
               </button>
 
@@ -334,15 +425,7 @@ export default async function MetricsPage({
                   type="submit"
                   name="division_id"
                   value={d.id}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 999,
-                    border: "1px solid #ddd",
-                    background: effectiveDivisionId === d.id ? "#eee" : "inherit",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
+                  style={chipBtnStyle(effectiveDivisionId === d.id)}
                   title={d.id}
                 >
                   {d.name}
@@ -356,7 +439,7 @@ export default async function MetricsPage({
           </form>
         }
         actions={
-          <a href={exportUrl({ month, level: "division", rank_scope: "all_in" })} style={btnStyle}>
+          <a href={exportUrl({ month, level: "division", rank_scope: "all_in" })} style={navBtnStyle()}>
             Export CSV
           </a>
         }
@@ -381,20 +464,7 @@ export default async function MetricsPage({
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {items.map((t, idx) => (
-                    <div
-                      key={t || String(idx)}
-                      style={{
-                        display: "inline-flex",
-                        alignSelf: "flex-start",
-                        padding: "2px 8px",
-                        border: "1px solid #333",
-                        borderRadius: 999,
-                        fontSize: 12,
-                        opacity: 0.95,
-                        whiteSpace: "nowrap",
-                      }}
-                      title={t}
-                    >
+                    <div key={t || String(idx)} style={tagPillStyle()} title={t}>
                       {t}
                     </div>
                   ))}
@@ -416,23 +486,10 @@ export default async function MetricsPage({
         rows={filteredRegionRows}
         controls={
           <form method="GET" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <label style={{ fontSize: 12, opacity: 0.8 }}>Region</label>
+            <label style={{ fontSize: UI.fontSize.small, opacity: 0.8 }}>Region</label>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button
-                type="submit"
-                name="region_id"
-                value=""
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #ddd",
-                  background: effectiveRegionId === "" ? "#eee" : "inherit",
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
+              <button type="submit" name="region_id" value="" style={chipBtnStyle(effectiveRegionId === "")}>
                 All Regions
               </button>
 
@@ -442,15 +499,7 @@ export default async function MetricsPage({
                   type="submit"
                   name="region_id"
                   value={r.id}
-                  style={{
-                    padding: "6px 10px",
-                    borderRadius: 999,
-                    border: "1px solid #ddd",
-                    background: effectiveRegionId === r.id ? "#eee" : "inherit",
-                    fontSize: 13,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
+                  style={chipBtnStyle(effectiveRegionId === r.id)}
                   title={r.id}
                 >
                   {r.name}
@@ -464,7 +513,7 @@ export default async function MetricsPage({
           </form>
         }
         actions={
-          <a href={exportUrl({ month, level: "region", rank_scope: "all_in" })} style={btnStyle}>
+          <a href={exportUrl({ month, level: "region", rank_scope: "all_in" })} style={navBtnStyle()}>
             Export CSV
           </a>
         }
@@ -493,7 +542,7 @@ export default async function MetricsPage({
         title="ITG Supervisor"
         rows={filteredItgRows}
         actions={
-          <a href={exportUrl({ month, level: "itg_supervisor", rank_scope: "region" })} style={btnStyle}>
+          <a href={exportUrl({ month, level: "itg_supervisor", rank_scope: "region" })} style={navBtnStyle()}>
             Export CSV
           </a>
         }
@@ -513,7 +562,7 @@ export default async function MetricsPage({
         title="Company"
         rows={companyRows}
         actions={
-          <a href={exportUrl({ month, level: "company", rank_scope: "all_in" })} style={btnStyle}>
+          <a href={exportUrl({ month, level: "company", rank_scope: "all_in" })} style={navBtnStyle()}>
             Export CSV
           </a>
         }
@@ -532,7 +581,7 @@ export default async function MetricsPage({
         title="Tech"
         rows={filteredTechRows}
         actions={
-          <a href={exportUrl({ month, level: "tech", rank_scope: "region" })} style={btnStyle}>
+          <a href={exportUrl({ month, level: "tech", rank_scope: "region" })} style={navBtnStyle()}>
             Export CSV
           </a>
         }
@@ -561,6 +610,36 @@ type Col = {
   render?: (row: RankRow) => React.ReactNode;
 };
 
+// One source of truth for column widths (tweak as needed)
+const COL_W: Record<string, string> = {
+  // sticky name columns
+  display_name: "140px",
+  tech_id: "110px",
+
+  // people columns
+  __vp: "160px",
+  __director: "240px",
+  __rm: "220px",
+  region_name: "160px",
+  itg_supervisor: "180px",
+  supervisor: "180px",
+  company_code: "130px",
+
+  // numeric columns
+  rank_overall: "70px",
+  headcount: "95px",
+  tnps: "80px",
+  ftr: "80px",
+  tool_usage: "95px",
+  total_jobs: "110px",
+};
+
+function gridTemplate(columns: { key: string }[]) {
+  // fallback width if a key isn't listed
+  const fallback = "110px";
+  return columns.map((c) => COL_W[c.key] ?? fallback).join(" ");
+}
+
 function Section({
   title,
   subtitle,
@@ -576,150 +655,154 @@ function Section({
   actions?: React.ReactNode;
   controls?: React.ReactNode;
 }) {
+  // grid columns: one per column, sized to content (like your nowrap table)
+  const gridCols = gridTemplate(columns);
+
   return (
-    <section style={{ marginTop: 16, border: "1px solid #ddd", borderRadius: 14, overflow: "hidden" }}>
+    <section style={{ marginTop: 16, border: PAGE.border, borderRadius: PAGE.sectionRadius, overflow: "hidden" }}>
       <div
         style={{
           padding: 12,
-          borderBottom: "1px solid #ddd",
+          borderBottom: PAGE.divider,
           display: "flex",
           justifyContent: "space-between",
           gap: 12,
+          alignItems: "flex-start",
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <div style={{ fontWeight: 950 }}>{title}</div>
-          {subtitle ? <div style={{ opacity: 0.8, fontSize: 12 }}>{subtitle}</div> : null}
+          {subtitle ? <div style={{ opacity: 0.8, fontSize: UI.fontSize.small }}>{subtitle}</div> : null}
           {controls ? <div style={{ marginTop: 6 }}>{controls}</div> : null}
         </div>
 
-        {actions ? <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{actions}</div> : null}
+        {actions ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>{actions}</div>
+        ) : null}
       </div>
 
+      {/* Scroll container */}
       <div style={{ overflowX: "auto" }}>
-        <table style={table}>
-          <thead>
-            <tr>
-              {columns.map((c) => (
-                <th
-                  key={c.key}
-                  style={{
-                    ...thBase,
-                    ...(c.right ? { textAlign: "right" } : null),
-                    ...(c.sticky ? thSticky : null),
-                  }}
-                >
-                  {c.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
+        {/* Header */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: gridCols,
+            columnGap: 0,
+            rowGap: 0,
+            minWidth: "max-content",
+            borderBottom: "1px solid #bbb",
+          }}
+        >
+          {columns.map((c) => (
+            <div
+              key={c.key}
+              style={{
+                ...headerCell,
+                ...(c.right ? { textAlign: "right" } : null),
+                ...(c.sticky ? stickyHeaderCell : null),
+              }}
+            >
+              {c.label}
+            </div>
+          ))}
+        </div>
 
-          <tbody>
-            {rows.map((r) => {
-              // Strong stable key (avoid collisions across scopes/levels/months)
-              const rowKey = [
-                s(r.fiscal_month_anchor),
-                s(r.rank_scope),
-                s(r.level),
-                s(r.level_key),
-                s(r.division_id),
-                s(r.region_id),
-                s(r.tech_id),
-                s(r.company_code),
-                s(r.display_name),
-              ]
-                .filter(Boolean)
-                .join("|");
+        {/* Body */}
+        <div style={{ minWidth: "max-content" }}>
+          {rows.map((r) => {
+            const rowKey = [
+              s(r.fiscal_month_anchor),
+              s(r.rank_scope),
+              s(r.level),
+              s(r.level_key),
+              s(r.division_id),
+              s(r.region_id),
+              s(r.tech_id),
+              s(r.company_code),
+              s(r.display_name),
+            ]
+              .filter(Boolean)
+              .join("|");
 
-              return (
-                <tr key={rowKey}>
-                  {columns.map((c) => {
-                    let raw: React.ReactNode = c.render ? c.render(r) : (r as any)[c.key];
+            return (
+              <div
+                key={rowKey}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: gridCols,
+                  minWidth: "max-content",
+                  borderBottom: "1px solid #eee",
+                }}
+              >
+                {columns.map((c) => {
+                  let raw: React.ReactNode = c.render ? c.render(r) : (r as any)[c.key];
 
-                    // Normalize
-                    raw = unwrapTd(raw);
+                  raw = unwrapTd(raw);
+                  if (containsDisallowedTableTags(raw)) raw = "—";
+                  const val: CellNode = sanitizeCellNode(raw);
 
-                    // Hard sanitize: never allow table tags anywhere in cell content
-                    if (containsDisallowedTableTags(raw)) raw = "—";
+                  return (
+                    <div
+                      key={c.key}
+                      style={{
+                        ...bodyCell,
+                        ...(c.right ? { textAlign: "right", fontVariantNumeric: "tabular-nums" } : null),
+                        ...(c.sticky ? stickyBodyCell : null),
+                        ...(c.sticky ? { fontWeight: 900 } : null),
+                      }}
+                    >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{val}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
 
-                    const val = raw ?? "—";
-
-                    return (
-                      <td
-                        key={c.key}
-                        style={{
-                          ...tdBase,
-                          ...(c.right ? { textAlign: "right", fontVariantNumeric: "tabular-nums" } : null),
-                          ...(c.sticky ? tdSticky : null),
-                          ...(c.sticky ? { fontWeight: 900 } : null),
-                        }}
-                      >
-                        {val}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} style={{ padding: 12, opacity: 0.7 }}>
-                  No rows found.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+          {rows.length === 0 ? (
+            <div style={{ padding: 12, opacity: 0.7 }}>No rows found.</div>
+          ) : null}
+        </div>
       </div>
     </section>
   );
 }
 
-/** styles */
-const btnStyle: React.CSSProperties = {
-  display: "inline-block",
-  padding: "10px 14px",
-  borderRadius: 12,
-  border: "1px solid #ddd",
-  textDecoration: "none",
-  fontWeight: 900,
-};
+const SURFACE_BG = "var(--app-surface, rgba(0,0,0,0.92))";
 
-const table: React.CSSProperties = {
-  width: "100%",
-  borderCollapse: "separate",
-  borderSpacing: 0,
-};
-
-const thBase: React.CSSProperties = {
-  textAlign: "left",
+const headerCell: React.CSSProperties = {
   padding: "10px 10px",
-  borderBottom: "1px solid #ddd",
-  fontSize: 12,
-  opacity: 0.9,
+  fontSize: 11,
+  opacity: 0.75,
+  fontWeight: 700,
+  letterSpacing: "0.02em",
+  textTransform: "uppercase",
   whiteSpace: "nowrap",
+  background: "inherit",
 };
 
-const tdBase: React.CSSProperties = {
+const bodyCell: React.CSSProperties = {
   padding: "10px 10px",
-  borderBottom: "1px solid #eee",
   fontSize: 13,
   whiteSpace: "nowrap",
   background: "inherit",
 };
 
-const thSticky: React.CSSProperties = {
+const stickyHeaderCell: React.CSSProperties = {
   position: "sticky",
   left: 0,
   zIndex: 3,
-  background: "inherit",
+  background: SURFACE_BG, // ✅ change from inherit
+  // optional divider:
+  // boxShadow: "1px 0 0 rgba(255,255,255,0.12)",
 };
 
-const tdSticky: React.CSSProperties = {
+const stickyBodyCell: React.CSSProperties = {
   position: "sticky",
   left: 0,
   zIndex: 2,
-  background: "inherit",
+  background: SURFACE_BG, // ✅ change from inherit
+  // optional divider:
+  // boxShadow: "1px 0 0 rgba(255,255,255,0.12)",
 };
