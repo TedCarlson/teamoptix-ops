@@ -82,8 +82,10 @@ async function loadReportSettings(scope: string): Promise<{ scope: string; rows:
 
   const rowsRaw = (json as any)?.rows ?? [];
   const rows: ReportSettingRow[] = Array.isArray(rowsRaw)
-    ? rowsRaw.map(normalizeRow).filter(Boolean)
-    : [];
+  ? rowsRaw
+      .map(normalizeRow)
+      .filter((r): r is ReportSettingRow => r !== null)
+  : [];
 
   return { scope: (json as any).scope ?? scope, rows };
 }
