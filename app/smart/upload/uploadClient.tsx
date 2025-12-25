@@ -161,7 +161,7 @@ useEffect(() => {
       if (notes.trim()) fd.append("notes", notes.trim());
       if (fiscalRefDate.trim()) fd.append("fiscal_ref_date", fiscalRefDate.trim());
 
-      const res1 = await fetch("/api/metrics/upload", { method: "POST", body: fd });
+      const res1 = await fetch("/api/ingest/upload", { method: "POST", body: fd });
       const json1 = (await res1.json()) as UploadResp;
       if (!res1.ok || !json1.ok) throw new Error((json1 as any).error || "Upload failed");
 
@@ -169,7 +169,7 @@ useEffect(() => {
 
       // 2) Parse
       setBusy("Parsing…");
-      const res2 = await fetch("/api/metrics/parse", {
+      const res2 = await fetch("/api/ingest/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batch_id: json1.batch_id }),
@@ -179,7 +179,7 @@ useEffect(() => {
 
       // 3) Commit
       setBusy("Committing…");
-      const res3 = await fetch("/api/metrics/commit-ontrac", {
+      const res3 = await fetch("/api/ingest/commit-ontrac", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batch_id: json1.batch_id }),
@@ -209,7 +209,7 @@ useEffect(() => {
     setErr(null);
     setBusy("Undoing…");
     try {
-      const res = await fetch("/api/metrics/undo", {
+      const res = await fetch("/api/ingest/undo", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batch_id: batchId }),

@@ -1,65 +1,236 @@
+// app/admin/settings/settingsClient.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
-type Row = {
-  scope: string;
-  metric_name: string;
-  label: string | null;
-  kpi_name: string | null;
-  enabled: boolean;
-  weight: number;
-  sort_order: number;
-  format: "number" | "percent";
-  hidden: boolean;
+type ReportSettingRow = {
+  metric_name: string; // raw header name (key) — READ ONLY
+  report_label: string;
+
+  p4p_enabled: boolean;
+  p4p_weight: number;
+
+  other_enabled: boolean;
+  other_weight: number;
+
+  format?: "number" | "percent";
 };
 
-export default function settingsClient({
+type SaveResp = { ok: true; updated?: number; scope?: string } | { ok: false; error: string };
+
+type KnownMetricsResp =
+  | {
+      ok: true;
+      source_system: string;
+      count: number;
+      metrics: Array<{ metric_name: string; format?: "number" | "percent" }>;
+    }
+  | { ok: false; error: string };
+
+type GetSettingsResp =
+  | { ok: true; rows: any[] }
+  | { ok: true; data: any[] }
+  | { ok: true; settings: any[] }
+  | { ok: true; items: any[] }
+  | { ok: false; error: string };
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const text = await res.text();
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+  const looksJson =
+    contentType.includes("application/json") ||
+    text.trim().startsWith("{") ||
+    text.trim().startsWith("[");
+
+  if (!looksJson) {
+    const snippet = text.slice(0, 240).replace(/\s+/g, " ").trim();
+    throw new Error(`Non-JSON response from ${url}: HTTP ${res.status} ${res.statusText} • ${snippet}`);
+  }
+
+  let json: any;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    const snippet = text.slice(0, 240).replace(/\s+/g, " ").trim();
+    throw new Error(`Invalid JSON from ${url}: HTTP ${res.status} ${res.statusText} • ${snippet}`);
+  }
+
+  if (!res.ok || (json && json.ok === false)) {
+    throw new Error(json?.error || `HTTP ${res.status} ${res.statusText}`);
+  }
+
+  return json as T;
+}
+
+function toNum(v: any) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeRow(x: any): ReportSettingRow | null {
+  const metric_name = String(x?.metric_name ?? "").trim();
+  if (!metric_name) return null;
+
+  return {
+    metric_name,
+    report_label: String(x?.report_label ?? x?.label ?? x?.kpi_name ?? metric_name).trim(),
+
+    p4p_enabled: !!x?.p4p_enabled,
+    p4p_weight: toNum(x?.p4p_weight),
+
+    other_enabled: !!x?.other_enabled,
+    other_weight: toNum(x?.other_weight),
+
+    format: x?.format === "percent" ? "percent" : x?.format === "number" ? "number" : undefined,
+  };
+}
+
+function extractRowsFromGet(json: any): any[] {
+  const arr =
+    json?.rows ??
+    json?.data ??
+    json?.settings ??
+    json?.items ??
+    (Array.isArray(json) ? json : null);
+
+  return Array.isArray(arr) ? arr : [];
+}
+
+export default function SettingsClient({
   scope,
   initialRows,
 }: {
   scope: string;
-  initialRows: Row[];
+  initialRows: ReportSettingRow[];
 }) {
-  const [showHidden, setShowHidden] = useState(false);
-
-  const [rows, setRows] = useState<Row[]>(
-    (initialRows ?? []).map((r) => ({
-      scope: (r.scope ?? scope) as string,
-      metric_name: r.metric_name,
-      label: r.label ?? r.metric_name,
-      kpi_name: r.kpi_name ?? r.label ?? r.metric_name,
-      enabled: !!r.enabled,
-      hidden: !!r.hidden,
-      weight: Number(r.weight ?? 0),
-      sort_order: Number(r.sort_order ?? 100),
-      format: (r.format === "percent" ? "percent" : "number") as any,
-    }))
+  const [rows, setRows] = useState<ReportSettingRow[]>(
+    (initialRows ?? []).map((r) => normalizeRow(r)).filter(Boolean) as ReportSettingRow[]
   );
 
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const visibleRows = useMemo(() => {
-    const base = showHidden ? rows : rows.filter((r) => !r.hidden);
-    return [...base].sort(
-      (a, b) =>
-        (a.sort_order ?? 100) - (b.sort_order ?? 100) ||
-        String(a.kpi_name).localeCompare(String(b.kpi_name))
-    );
-  }, [rows, showHidden]);
+  // ✅ Allowlist pulled from server
+  const [knownMetrics, setKnownMetrics] = useState<Array<{ metric_name: string; format?: "number" | "percent" }>>([]);
+  const [knownErr, setKnownErr] = useState<string | null>(null);
 
-  const enabledWeightSum = useMemo(() => {
-    return rows.reduce(
-      (acc, r) => acc + (r.enabled && !r.hidden ? Number(r.weight) || 0 : 0),
-      0
-    );
-  }, [rows]);
+  // Add controls (guarded)
+  const [pickMetric, setPickMetric] = useState<string>("");
 
-  function updateRow(metric_name: string, patch: Partial<Row>) {
-    setRows((prev) =>
-      prev.map((r) => (r.metric_name === metric_name ? { ...r, ...patch } : r))
-    );
+  // Fetch allowlist once
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setKnownErr(null);
+      try {
+        const json = await fetchJson<KnownMetricsResp>("/api/ingest/known-metrics?source_system=all", {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        const arr = (json as any).metrics ?? [];
+        const cleaned = Array.isArray(arr)
+  ? arr
+      .map(
+        (m: any): { metric_name: string; format?: "number" | "percent" } => ({
+          metric_name: String(m?.metric_name ?? "").trim(),
+          format: m?.format === "percent" ? "percent" : m?.format === "number" ? "number" : undefined,
+        })
+      )
+      .filter((m) => m.metric_name)
+  : [];
+
+
+        if (!cleaned.length) throw new Error("known-metrics returned zero metrics");
+
+        if (!cancelled) setKnownMetrics(cleaned);
+      } catch (e: any) {
+        if (!cancelled) {
+          setKnownErr(e?.message || "Failed to load known metrics");
+          setKnownMetrics([]); // existing rows still work
+        }
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const knownList = useMemo(() => knownMetrics.map((m) => m.metric_name), [knownMetrics]);
+  const knownMap = useMemo(() => new Map(knownMetrics.map((m) => [m.metric_name, m])), [knownMetrics]);
+  const allowedSet = useMemo(() => new Set(knownList), [knownList]);
+  const existingSet = useMemo(() => new Set(rows.map((r) => r.metric_name)), [rows]);
+
+  const availableToAdd = useMemo(() => {
+    if (!knownList.length) return [];
+    return knownList.filter((m) => !existingSet.has(m));
+  }, [knownList, existingSet]);
+
+  const p4pSum = useMemo(() => rows.reduce((acc, r) => acc + (r.p4p_enabled ? toNum(r.p4p_weight) : 0), 0), [rows]);
+  const otherSum = useMemo(
+    () => rows.reduce((acc, r) => acc + (r.other_enabled ? toNum(r.other_weight) : 0), 0),
+    [rows]
+  );
+
+  function upsertMetric(metric_name: string) {
+    const key = metric_name.trim();
+    if (!key) return;
+
+    // ✅ Guardrail: only allow from server-provided allowlist
+    if (!allowedSet.has(key)) {
+      setMsg(`Blocked: "${key}" is not in the known raw header list.`);
+      return;
+    }
+
+    const meta = knownMap.get(key);
+
+    setRows((prev) => {
+      if (prev.some((r) => r.metric_name === key)) return prev;
+      return [
+        ...prev,
+        {
+          metric_name: key,
+          report_label: key,
+          p4p_enabled: false,
+          p4p_weight: 0,
+          other_enabled: false,
+          other_weight: 0,
+          format: meta?.format,
+        },
+      ];
+    });
+  }
+
+  function addPicked() {
+    setMsg(null);
+    if (!pickMetric) return;
+    upsertMetric(pickMetric);
+    setPickMetric("");
+  }
+
+  function updateRow(metric_name: string, patch: Partial<ReportSettingRow>) {
+    setRows((prev) => prev.map((r) => (r.metric_name === metric_name ? { ...r, ...patch } : r)));
+  }
+
+  function removeRow(metric_name: string) {
+    setRows((prev) => prev.filter((r) => r.metric_name !== metric_name));
+  }
+
+  // ✅ THIS is the “DB verified refresh” loop you asked for
+  async function reloadFromDb() {
+    const json = await fetchJson<GetSettingsResp>(`/api/ingest/settings?scope=${encodeURIComponent(scope)}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    const arr = extractRowsFromGet(json);
+    const normalized = arr.map(normalizeRow).filter(Boolean) as ReportSettingRow[];
+    setRows(normalized);
   }
 
   async function save() {
@@ -67,28 +238,31 @@ export default function settingsClient({
     setMsg(null);
 
     try {
-      const payloadRows = rows.map((r) => ({
+      const payload = rows.map((r) => ({
         metric_name: r.metric_name,
-        label: r.label,
-        kpi_name: r.kpi_name,
-        enabled: r.hidden ? false : !!r.enabled,
-        hidden: !!r.hidden,
-        weight: r.hidden ? 0 : Number(r.weight) || 0,
-        sort_order: Number(r.sort_order) || 100,
+        report_label: String(r.report_label ?? "").trim() || r.metric_name,
+
+        p4p_enabled: !!r.p4p_enabled,
+        p4p_weight: r.p4p_enabled ? toNum(r.p4p_weight) : 0,
+
+        other_enabled: !!r.other_enabled,
+        other_weight: r.other_enabled ? toNum(r.other_weight) : 0,
+
         format: r.format,
       }));
 
-      // Keep API path as-is for now
-      const res = await fetch("/api/metrics/settings", {
+      const json = await fetchJson<SaveResp>("/api/ingest/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ scope, rows: payloadRows }),
+        body: JSON.stringify({ scope, rows: payload }),
       });
 
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error || "Save failed");
+      const updated = (json as any).updated;
 
-      setMsg(`Saved (${json.updated} rows).`);
+      // ✅ Immediately reload from DB as the source of truth
+      await reloadFromDb();
+
+      setMsg(`Saved${typeof updated === "number" ? ` (${updated} rows)` : ""} • reloaded from DB.`);
     } catch (e: any) {
       setMsg(e?.message || "Save failed");
     } finally {
@@ -96,40 +270,101 @@ export default function settingsClient({
     }
   }
 
+  const sortedRows = useMemo(() => [...rows].sort((a, b) => a.metric_name.localeCompare(b.metric_name)), [rows]);
+
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 14, overflow: "hidden" }}>
-      <div
-        style={{
-          padding: 12,
-          borderBottom: "1px solid #ddd",
-          display: "flex",
-          justifyContent: "space-between",
-          gap: 12,
-          alignItems: "center",
-        }}
-      >
-        <div style={{ fontWeight: 950 }}>KPI Settings</div>
+      <div style={topBar}>
+        <div style={{ fontWeight: 950 }}>Report Settings</div>
 
-        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, opacity: 0.9 }}>
-            <input
-              type="checkbox"
-              checked={showHidden}
-              onChange={(e) => setShowHidden(e.target.checked)}
-            />
-            Show hidden metrics
-          </label>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <div style={{ fontSize: 12, opacity: 0.85 }}>
+            P4P sum: <span style={{ fontVariantNumeric: "tabular-nums" }}>{p4pSum.toFixed(2)}</span> (target: 1.00)
+          </div>
 
           <div style={{ fontSize: 12, opacity: 0.85 }}>
-            Enabled weight sum:{" "}
-            <span style={{ fontVariantNumeric: "tabular-nums" }}>
-              {enabledWeightSum.toFixed(2)}
-            </span>{" "}
-            (target: 1.00)
+            Other sum: <span style={{ fontVariantNumeric: "tabular-nums" }}>{otherSum.toFixed(2)}</span> (target: 1.00)
           </div>
 
           <button onClick={save} disabled={saving} style={btn}>
             {saving ? "Saving..." : "Save"}
+          </button>
+
+          <button
+            onClick={async () => {
+              setMsg(null);
+              try {
+                await reloadFromDb();
+                setMsg("Reloaded from DB.");
+              } catch (e: any) {
+                setMsg(e?.message || "Reload failed");
+              }
+            }}
+            disabled={saving}
+            style={btnSm}
+          >
+            Reload
+          </button>
+        </div>
+      </div>
+
+      {/* Guarded Add Controls (server allowlist) */}
+      <div style={{ padding: 12, borderBottom: "1px solid #ddd", display: "grid", gap: 10 }}>
+        <div style={{ fontSize: 12, opacity: 0.8 }}>
+          Add metrics is restricted to the server-known metrics catalog (prevents typos breaking joins).
+        </div>
+
+        {knownErr ? (
+          <div style={{ fontSize: 12, padding: 10, borderRadius: 12, border: "1px solid rgba(220,60,60,0.4)" }}>
+            <b>Known metrics not loaded:</b> {knownErr}
+          </div>
+        ) : null}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select
+            value={pickMetric}
+            onChange={(e) => setPickMetric(e.target.value)}
+            style={{ ...input, minWidth: 320 }}
+            disabled={!knownList.length}
+          >
+            <option value="">{knownList.length ? "Select a raw header…" : "Loading known headers…"}</option>
+            {availableToAdd.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+
+          <button onClick={addPicked} style={btnSm} disabled={!pickMetric || !knownList.length}>
+            Add
+          </button>
+
+          <button
+            onClick={() => {
+              if (!knownList.length) return;
+              setRows((prev) => {
+                const next = [...prev];
+                for (const meta of knownMetrics) {
+                  const m = meta.metric_name;
+                  if (!next.some((r) => r.metric_name === m)) {
+                    next.push({
+                      metric_name: m,
+                      report_label: m,
+                      p4p_enabled: false,
+                      p4p_weight: 0,
+                      other_enabled: false,
+                      other_weight: 0,
+                      format: meta.format,
+                    });
+                  }
+                }
+                return next;
+              });
+            }}
+            style={btnSm}
+            disabled={!knownList.length}
+          >
+            Add all known
           </button>
         </div>
       </div>
@@ -138,75 +373,92 @@ export default function settingsClient({
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              <th style={th}>On</th>
-              <th style={th}>KPI Name (report)</th>
-              <th style={th}>Weight</th>
-              <th style={th}>Format</th>
-              <th style={th}>Order</th>
-              <th style={th}>Metric Name (raw)</th>
+              <th style={th}>Raw Header Name</th>
+              <th style={th}>Report Label</th>
+              <th style={thCenter}>P4P</th>
+              <th style={th}>P4P Weight</th>
+              <th style={thCenter}>Other</th>
+              <th style={th}>Other Weight</th>
+              <th style={th} />
             </tr>
           </thead>
+
           <tbody>
-            {visibleRows.map((r) => (
-              <tr key={r.metric_name} style={r.hidden ? { opacity: 0.6 } : undefined}>
-                <td style={td}>
-                  <input
-                    type="checkbox"
-                    checked={r.hidden ? false : r.enabled}
-                    disabled={r.hidden}
-                    onChange={(e) => updateRow(r.metric_name, { enabled: e.target.checked })}
-                  />
-                </td>
-
-                <td style={td}>
-                  <input
-                    value={r.kpi_name ?? ""}
-                    onChange={(e) => updateRow(r.metric_name, { kpi_name: e.target.value })}
-                    style={input}
-                    disabled={r.hidden}
-                  />
-                </td>
-
-                <td style={td}>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={Number(r.weight)}
-                    onChange={(e) => updateRow(r.metric_name, { weight: Number(e.target.value) })}
-                    style={inputRight}
-                    disabled={r.hidden}
-                  />
-                </td>
-
-                <td style={td}>
-                  <select
-                    value={r.format}
-                    onChange={(e) => updateRow(r.metric_name, { format: e.target.value as any })}
-                    style={input}
-                    disabled={r.hidden}
-                  >
-                    <option value="number">number</option>
-                    <option value="percent">percent</option>
-                  </select>
-                </td>
-
-                <td style={td}>
-                  <input
-                    type="number"
-                    step="1"
-                    value={Number(r.sort_order)}
-                    onChange={(e) => updateRow(r.metric_name, { sort_order: Number(e.target.value) })}
-                    style={inputRight}
-                    disabled={r.hidden}
-                  />
-                </td>
-
-                <td style={tdMono}>
-                  {r.metric_name}
-                  {r.hidden ? <span style={{ marginLeft: 8, fontSize: 11 }}>(hidden)</span> : null}
+            {sortedRows.length === 0 ? (
+              <tr>
+                <td colSpan={7} style={{ padding: 14, fontSize: 13, opacity: 0.75 }}>
+                  No metrics configured yet.
                 </td>
               </tr>
-            ))}
+            ) : (
+              sortedRows.map((r) => (
+                <tr key={r.metric_name}>
+                  <td style={tdMono}>{r.metric_name}</td>
+
+                  <td style={td}>
+                    <input
+                      value={r.report_label ?? ""}
+                      onChange={(e) => updateRow(r.metric_name, { report_label: e.target.value })}
+                      style={input}
+                    />
+                  </td>
+
+                  <td style={tdCenter}>
+                    <input
+                      type="checkbox"
+                      checked={!!r.p4p_enabled}
+                      onChange={(e) =>
+                        updateRow(r.metric_name, {
+                          p4p_enabled: e.target.checked,
+                          p4p_weight: e.target.checked ? r.p4p_weight : 0,
+                        })
+                      }
+                    />
+                  </td>
+
+                  <td style={td}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={toNum(r.p4p_weight)}
+                      onChange={(e) => updateRow(r.metric_name, { p4p_weight: toNum(e.target.value) })}
+                      style={inputRight}
+                      disabled={!r.p4p_enabled}
+                    />
+                  </td>
+
+                  <td style={tdCenter}>
+                    <input
+                      type="checkbox"
+                      checked={!!r.other_enabled}
+                      onChange={(e) =>
+                        updateRow(r.metric_name, {
+                          other_enabled: e.target.checked,
+                          other_weight: e.target.checked ? r.other_weight : 0,
+                        })
+                      }
+                    />
+                  </td>
+
+                  <td style={td}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={toNum(r.other_weight)}
+                      onChange={(e) => updateRow(r.metric_name, { other_weight: toNum(e.target.value) })}
+                      style={inputRight}
+                      disabled={!r.other_enabled}
+                    />
+                  </td>
+
+                  <td style={td}>
+                    <button onClick={() => removeRow(r.metric_name)} style={btnSmDanger}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -220,6 +472,16 @@ export default function settingsClient({
   );
 }
 
+const topBar: React.CSSProperties = {
+  padding: 12,
+  borderBottom: "1px solid #ddd",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
+  alignItems: "center",
+  flexWrap: "wrap",
+};
+
 const th: React.CSSProperties = {
   textAlign: "left",
   padding: "10px 10px",
@@ -229,17 +491,21 @@ const th: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
+const thCenter: React.CSSProperties = { ...th, textAlign: "center" };
+
 const td: React.CSSProperties = {
   padding: "10px 10px",
   borderBottom: "1px solid #eee",
   fontSize: 13,
   whiteSpace: "nowrap",
+  verticalAlign: "middle",
 };
+
+const tdCenter: React.CSSProperties = { ...td, textAlign: "center" };
 
 const tdMono: React.CSSProperties = {
   ...td,
-  fontFamily:
-    "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
   fontSize: 12,
   opacity: 0.9,
 };
@@ -267,4 +533,19 @@ const btn: React.CSSProperties = {
   color: "inherit",
   fontWeight: 900,
   cursor: "pointer",
+};
+
+const btnSm: React.CSSProperties = {
+  padding: "8px 12px",
+  borderRadius: 12,
+  border: "1px solid #ddd",
+  background: "transparent",
+  color: "inherit",
+  fontWeight: 900,
+  cursor: "pointer",
+};
+
+const btnSmDanger: React.CSSProperties = {
+  ...btnSm,
+  border: "1px solid rgba(220,60,60,0.5)",
 };

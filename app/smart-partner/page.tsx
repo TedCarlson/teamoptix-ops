@@ -8,20 +8,9 @@ export default function Page() {
         Landing page placeholder. Content will appear in sections below.
       </p>
 
-      <SectionBox
-        title="Executive Summary"
-        hint="Top-level snapshot for leadership"
-      />
-
-      <SectionBox
-        title="P4P Performance (Track A)"
-        hint="Weighted performance view"
-      />
-
-      <SectionBox
-        title="Legacy / Tie-break Context (Track B)"
-        hint="Appended context alongside P4P"
-      />
+      <SectionBox title="Executive Summary" hint="Top-level snapshot for leadership" />
+      <SectionBox title="P4P Performance (Track A)" hint="Weighted performance view" />
+      <SectionBox title="Legacy / Tie-break Context (Track B)" hint="Appended context alongside P4P" />
     </PageShell>
   );
 }

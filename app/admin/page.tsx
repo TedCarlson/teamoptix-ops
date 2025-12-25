@@ -1,3 +1,4 @@
+import React from 'react'
 import Link from 'next/link'
 
 const cardStyle: React.CSSProperties = {
@@ -22,9 +23,15 @@ export default function AdminHomePage() {
                 <Link href="/admin/uploads" style={cardStyle}>
                     Uploads →
                 </Link>
+
                 <Link href="/admin/settings" style={cardStyle}>
                     Settings →
                 </Link>
+
+                <Link href="/admin/rubric" style={cardStyle}>
+                    Rubric →
+                </Link>
+
                 <Link href="/smart" style={cardStyle}>
                     Back to SMART →
                 </Link>

@@ -77,7 +77,7 @@ export default function SettingsClientSmart({
         format: r.format === "percent" ? "percent" : "number",
       }));
 
-      const res = await fetch("/api/metrics/settings", {
+      const res = await fetch("/api/ingest/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scope, rows: payloadRows }),

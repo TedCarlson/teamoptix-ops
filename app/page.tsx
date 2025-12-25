@@ -1,94 +1,78 @@
 // app/page.tsx
 import React from "react";
-import Link from "next/link";
-import PdfSendDemoButton from "./PdfSendDemoButton";
 
-const cardStyle: React.CSSProperties = {
-  padding: "14px 18px",
+const page: React.CSSProperties = {
+  padding: 24,
+  maxWidth: 980,
+  margin: "0 auto",
+};
+
+const title: React.CSSProperties = {
+  fontSize: 44,
+  fontWeight: 850,
+  margin: 0,
+};
+
+const subtitle: React.CSSProperties = {
+  fontSize: 16,
+  opacity: 0.8,
+  marginTop: 10,
+};
+
+const box: React.CSSProperties = {
+  padding: 16,
   borderRadius: 12,
-  border: "1px solid currentColor",
-  textDecoration: "none",
-  fontWeight: 700,
-  display: "block",
-  opacity: 0.92,
+  border: "1px solid rgba(0,0,0,0.18)",
+  marginTop: 12,
 };
 
-const subCardStyle: React.CSSProperties = {
-  ...cardStyle,
-  padding: "12px 18px",
-  fontWeight: 650,
-  opacity: 0.88,
-};
-
-const sectionTitle: React.CSSProperties = {
-  fontSize: 12,
-  letterSpacing: 0.8,
+const boxTitle: React.CSSProperties = {
+  margin: 0,
+  fontSize: 13,
+  fontWeight: 800,
+  letterSpacing: 0.6,
   textTransform: "uppercase",
   opacity: 0.75,
-  marginTop: 22,
-  marginBottom: 10,
+};
+
+const boxBody: React.CSSProperties = {
+  marginTop: 10,
+  fontSize: 14,
+  lineHeight: 1.55,
+  opacity: 0.85,
 };
 
 export default function HomePage() {
   return (
-    <main style={{ padding: 40, maxWidth: 980, margin: "0 auto" }}>
-      <h1 style={{ fontSize: 44, fontWeight: 850, marginBottom: 8 }}>Insight</h1>
-
-      <p style={{ fontSize: 16, opacity: 0.85, marginBottom: 18 }}>
-        Precision KPI visibility + roster, uploads, and reporting.
+    <main style={page}>
+      <h1 style={title}>Insight</h1>
+      <p style={subtitle}>
+        Menu-first workspace. Use the hamburger menu to navigate.
       </p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 14, maxWidth: 520 }}>
-        <div>
-          <div style={sectionTitle}>Role menu</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-            <Link href="/smart" style={cardStyle}>
-              SMART Report (Internal) →
-            </Link>
-            <Link href="/smart-partner" style={cardStyle}>
-              SMART Report (Business Partner) →
-            </Link>
-            <Link href="/admin" style={cardStyle}>
-              Admin →
-            </Link>
-          </div>
+      <section style={box}>
+        <h2 style={boxTitle}>Status</h2>
+        <div style={boxBody}>
+          DB overhaul in progress. UI is being simplified into landing pages with
+          placeholder sections.
         </div>
+      </section>
 
-        <div>
-          <div style={sectionTitle}>Core tools</div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-            <Link href="/metrics" style={cardStyle}>
-              Metrics (Current) →
-            </Link>
-
-            <a href="/api/pdf/kpi" target="_blank" rel="noreferrer" style={subCardStyle}>
-              Preview KPI PDF (browser) →
-            </a>
-
-            {/* ✅ Send in background (no new tab PDF) */}
-            <PdfSendDemoButton />
-
-            <Link href="/roster" style={cardStyle}>
-              Roster →
-            </Link>
-            <Link href="/route-lock" style={cardStyle}>
-              Route Lock →
-            </Link>
-          </div>
-
-          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75, lineHeight: 1.45 }}>
-            Preview opens a new tab. Email send triggers server-side and returns a status message.
-          </div>
+      <section style={box}>
+        <h2 style={boxTitle}>Operational Views</h2>
+        <div style={boxBody}>
+          All operational routes live in the menu (Admin, SMART, Roster, Regions).
+          This page intentionally contains no action buttons.
         </div>
+      </section>
 
-        <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8, lineHeight: 1.5 }}>
-          <div>
-            <b>Note:</b> Role-based routing and permissions will be driven by <code>roster_v2</code>.
-          </div>
-          <div>For now, these links establish the page map and navigation skeleton.</div>
+      <section style={box}>
+        <h2 style={boxTitle}>Notes</h2>
+        <div style={boxBody}>
+          Placeholders will later render role-scoped summaries, links, and
+          section data as the DB contracts stabilize.
         </div>
-      </div>
+      </section>
     </main>
   );
 }

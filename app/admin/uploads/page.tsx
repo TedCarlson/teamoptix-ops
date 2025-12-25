@@ -1,59 +1,39 @@
-import MetricsUploadClient from '../../metrics/upload/uploadClient'
+export default function AdminUploadsHubPage() {
+  return (
+    <main style={{ padding: 24, maxWidth: 980, margin: "0 auto" }}>
+      <h1 style={{ margin: 0, fontSize: 28, fontWeight: 900 }}>Uploads</h1>
+      <p style={{ marginTop: 10, opacity: 0.75 }}>
+        Choose a source-specific uploader.
+      </p>
 
-export default function AdminUploadsPage() {
-    return (
-        <main style={{ padding: 40, maxWidth: 1100, margin: '0 auto' }}>
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                    alignItems: 'center',
-                    marginBottom: 18,
-                    flexWrap: 'wrap',
-                }}
-            >
-                <div>
-                    <h1 style={{ fontSize: 34, fontWeight: 900, margin: 0 }}>KPI Upload</h1>
-                    <p style={{ marginTop: 6, opacity: 0.85 }}>
-                        Drop KPI files here for upload.
-                    </p>
-                </div>
+      <div
+        style={{
+          marginTop: 12,
+          padding: 16,
+          borderRadius: 12,
+          border: "1px solid rgba(0,0,0,0.18)",
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase", opacity: 0.75 }}>
+          Sources
+        </div>
 
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <a
-                        href="/admin"
-                        style={{
-                            display: 'inline-block',
-                            padding: '10px 14px',
-                            borderRadius: 12,
-                            border: '1px solid currentColor',
-                            textDecoration: 'none',
-                            fontWeight: 800,
-                            opacity: 0.92,
-                        }}
-                    >
-                        ← Back to Admin
-                    </a>
-
-                    <a
-                        href="/smart"
-                        style={{
-                            display: 'inline-block',
-                            padding: '10px 14px',
-                            borderRadius: 12,
-                            border: '1px solid currentColor',
-                            textDecoration: 'none',
-                            fontWeight: 800,
-                            opacity: 0.92,
-                        }}
-                    >
-                        View SMART →
-                    </a>
-                </div>
-            </div>
-
-            <MetricsUploadClient />
-        </main>
-    )
+        <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+          <a
+            href="/admin/uploads/ontrac"
+            style={{
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: "1px solid rgba(0,0,0,0.18)",
+              textDecoration: "none",
+              fontWeight: 800,
+              display: "block",
+            }}
+          >
+            Ontrac Upload →
+          </a>
+        </div>
+      </div>
+    </main>
+  );
 }
