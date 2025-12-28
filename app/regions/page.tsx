@@ -18,15 +18,31 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
+import { headers } from "next/headers";
 import ComingSoon from "../_components/ComingSoon";
 
 type RegionsApiResponse = { ok: true; regions: string[] } | { ok: false; error: string };
+
+async function getOriginFromHeaders(): Promise<string> {
+  const h = await headers();
+
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+
+  // Defensive fallback (should not happen in normal Next/Vercel execution)
+  if (!host) return "http://localhost:3000";
+
+  return `${proto}://${host}`;
+}
 
 export default async function Page() {
   let regions: string[] = [];
 
   try {
-    const res = await fetch("http://localhost:3000/api/ref/regions", { cache: "no-store" });
+    const origin = await getOriginFromHeaders();
+    const url = new URL("/api/ref/regions", origin);
+
+    const res = await fetch(url.toString(), { cache: "no-store" });
     const json = (await res.json()) as RegionsApiResponse;
 
     if (json && "ok" in json && json.ok && Array.isArray(json.regions)) {
@@ -73,7 +89,6 @@ export default async function Page() {
             </li>
           ))}
         </ul>
-
       </div>
     </div>
   );
